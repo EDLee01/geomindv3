@@ -8,6 +8,7 @@ Features:
 - 代码自动执行 + 失败重试
 - Skills 系统（.md 知识库）
 - 流式输出
+- 用户系统 + 对话历史
 """
 
 import chainlit as cl
@@ -28,6 +29,16 @@ from core.literature import search_papers, format_papers_markdown, format_papers
 from core.code_runner import execute_python, extract_code_blocks, extract_markdown_blocks, format_execution_result, build_fix_prompt
 from core.skills import SkillsManager
 from core.memory import ProjectMemory
+from core.database import (
+    create_user,
+    authenticate_user,
+    get_user_by_id,
+    create_conversation,
+    get_user_conversations,
+    add_message,
+    get_conversation_messages,
+    update_conversation_title,
+)
 
 # ============================================================
 # 全局配置
@@ -42,38 +53,43 @@ skills_manager = SkillsManager(SKILLS_DIR)
 
 
 # ============================================================
-# 用户认证（可选）
+# 用户认证（数据库版）
 # ============================================================
-
-def _get_users() -> Dict[str, str]:
-    """从环境变量获取用户列表"""
-    users_str = os.getenv("GEOMIND_USERS", "")
-    if not users_str:
-        return {}
-
-    users = {}
-    for pair in users_str.split(","):
-        if ":" in pair:
-            username, password = pair.split(":", 1)
-            users[username.strip()] = password.strip()
-    return users
-
 
 # 只有配置了 CHAINLIT_AUTH_SECRET 才启用认证
 if os.getenv("CHAINLIT_AUTH_SECRET"):
     @cl.password_auth_callback
     def auth_callback(username: str, password: str) -> Optional[cl.User]:
-        """密码认证回调"""
-        users = _get_users()
+        """密码认证回调 - 使用数据库验证"""
+        # 尝试数据库认证
+        user = authenticate_user(username, password)
+        if user:
+            return cl.User(
+                identifier=user["username"],
+                metadata={
+                    "user_id": user["id"],
+                    "email": user["email"],
+                    "role": "admin" if username == "admin" else "user"
+                }
+            )
 
-        # 如果没有配置用户，允许任意登录（仅需 secret）
-        if not users:
-            return cl.User(identifier=username, metadata={"role": "user"})
-
-        # 验证用户名密码
-        if username in users and users[username] == password:
-            role = "admin" if username == "admin" else "user"
-            return cl.User(identifier=username, metadata={"role": role})
+        # 如果数据库中没有用户，检查是否是新用户注册
+        # 格式: username|email （密码作为注册密码）
+        if "|" in username:
+            parts = username.split("|")
+            if len(parts) == 2:
+                new_username, email = parts
+                result = create_user(new_username, email, password)
+                if result["success"]:
+                    return cl.User(
+                        identifier=new_username,
+                        metadata={
+                            "user_id": result["user_id"],
+                            "email": email,
+                            "role": "user",
+                            "just_registered": True
+                        }
+                    )
 
         return None
 
@@ -216,6 +232,39 @@ async def on_chat_start():
         ).send()
         return
 
+    # 获取用户信息（如果已登录）
+    user = cl.user_session.get("user")
+    user_id = None
+    user_name = "访客"
+    user_email = ""
+
+    if user and user.metadata:
+        user_id = user.metadata.get("user_id")
+        user_name = user.identifier
+        user_email = user.metadata.get("email", "")
+
+        # 检查是否刚注册
+        if user.metadata.get("just_registered"):
+            await cl.Message(
+                content=f"🎉 **注册成功！** 欢迎加入 GeoMind，{user_name}！\n\n"
+                f"你的邮箱: {user_email}"
+            ).send()
+
+    # 创建新对话（如果用户已登录）
+    conversation_id = None
+    if user_id:
+        conversation_id = create_conversation(user_id)
+        cl.user_session.set("conversation_id", conversation_id)
+
+        # 获取历史对话列表
+        history_conversations = get_user_conversations(user_id, limit=5)
+        if history_conversations:
+            history_text = "\n".join([
+                f"- {c['title']} ({c['updated_at'][:10]})"
+                for c in history_conversations[:5]
+            ])
+            # 可以在侧边栏显示历史对话
+
     # 初始化 Memory
     memory = ProjectMemory("default", name="快速对话")
     cl.user_session.set("memory", memory)
@@ -272,17 +321,26 @@ async def on_chat_start():
     ).send()
 
     # 欢迎消息
-    await cl.Message(
-        content=f"👋 你好！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
-        f"当前模型: **{profile}** (`{default_model}`)\n\n"
-        f"我可以帮你：\n"
-        f"- 🔍 检索 70 万+ 验证论文\n"
-        f"- 📊 分析数据、执行代码\n"
-        f"- 📈 生成学术级图表\n"
-        f"- ✍️ 辅助论文写作\n\n"
-        f"💡 **提示**: 点击输入框旁的 ⚙️ 齿轮图标可以切换模型和调整设置\n\n"
-        f"直接告诉我你的需求吧！"
-    ).send()
+    welcome_msg = f"👋 你好"
+    if user_id:
+        welcome_msg += f"，**{user_name}**"
+    welcome_msg += f"！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
+    welcome_msg += f"当前模型: **{profile}** (`{default_model}`)\n\n"
+    welcome_msg += f"我可以帮你：\n"
+    welcome_msg += f"- 🔍 检索 70 万+ 验证论文\n"
+    welcome_msg += f"- 📊 分析数据、执行代码\n"
+    welcome_msg += f"- 📈 生成学术级图表\n"
+    welcome_msg += f"- ✍️ 辅助论文写作\n\n"
+
+    if user_id:
+        welcome_msg += f"💾 对话将自动保存到你的账户\n\n"
+    else:
+        welcome_msg += f"💡 **提示**: 登录后可以保存对话历史\n\n"
+
+    welcome_msg += f"⚙️ 点击输入框旁的齿轮图标可以切换模型\n\n"
+    welcome_msg += f"直接告诉我你的需求吧！"
+
+    await cl.Message(content=welcome_msg).send()
 
 
 # ============================================================
@@ -377,6 +435,17 @@ async def on_message(message: cl.Message):
 
     memory = cl.user_session.get("memory")
     user_text = message.content
+    conversation_id = cl.user_session.get("conversation_id")
+
+    # 保存用户消息到数据库
+    if conversation_id:
+        add_message(conversation_id, "user", user_text)
+
+        # 如果是第一条消息，用它作为对话标题
+        messages = get_conversation_messages(conversation_id)
+        if len(messages) == 1:
+            title = user_text[:50] + ("..." if len(user_text) > 50 else "")
+            update_conversation_title(conversation_id, title)
 
     # 处理上传文件
     file_context = ""
@@ -474,6 +543,10 @@ async def on_message(message: cl.Message):
         await response_msg.stream_token(token)
 
     await response_msg.update()
+
+    # 保存 AI 回复到数据库
+    if conversation_id and full_response:
+        add_message(conversation_id, "assistant", full_response)
 
     # ── Artifacts: 提取文档内容 ──
     doc_artifacts = []
