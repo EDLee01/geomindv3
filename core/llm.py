@@ -256,15 +256,16 @@ async def _stream_openai_compatible(base_url, api_key, model, messages, system_p
         "messages": full_messages,
         "stream": True,
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as resp:
                 if resp.status_code != 200:
                     error_body = await resp.aread()
-                    yield f"❌ API 错误 ({resp.status_code}): {error_body.decode()[:300]}"
+                    error_text = error_body.decode()
+                    yield f"❌ API 错误 ({resp.status_code})\n\n**请求模型**: `{model}`\n**错误详情**: {error_text[:500]}"
                     return
-                
+
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -279,5 +280,9 @@ async def _stream_openai_compatible(base_url, api_key, model, messages, system_p
                             yield text
                     except json.JSONDecodeError:
                         continue
+    except httpx.ConnectError as e:
+        yield f"❌ 连接失败: 无法连接到 {base_url}\n\n错误: {str(e)}"
+    except httpx.TimeoutException:
+        yield f"❌ 请求超时: {base_url} 响应时间过长"
     except Exception as e:
-        yield f"\n\n❌ 流式请求失败: {str(e)}"
+        yield f"❌ 流式请求失败\n\n**请求模型**: `{model}`\n**错误类型**: {type(e).__name__}\n**错误信息**: {str(e)}"
