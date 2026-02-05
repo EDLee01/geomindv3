@@ -34,10 +34,10 @@ MODEL_PROVIDERS = {
     "Kimi": {
         "env_key": "KIMI_API_KEY",
         "base_url": "https://api.moonshot.cn/v1",
-        "models": ["moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
-        "default_model": "moonshot-v1-32k",
+        "models": ["kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
+        "default_model": "kimi-k2.5",
         "format": "openai",
-        "description": "Moonshot Kimi · 128K 超长上下文",
+        "description": "Moonshot Kimi · 1M 超长上下文",
         "icon": "🟣",
     },
     "DeepSeek": {
