@@ -223,6 +223,13 @@ def extract_code_blocks(text: str) -> List[str]:
     return [b.strip() for b in blocks if b.strip()]
 
 
+def extract_markdown_blocks(text: str) -> List[str]:
+    """从 AI 回复中提取 Markdown 文档块"""
+    pattern = r"```markdown\s*\n(.*?)\n```"
+    blocks = re.findall(pattern, text, re.DOTALL)
+    return [b.strip() for b in blocks if b.strip()]
+
+
 # ============================================================
 # 执行结果格式化
 # ============================================================

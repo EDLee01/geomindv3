@@ -12,10 +12,7 @@ from typing import List, Dict, Optional
 # 配置
 # ============================================================
 
-QDRANT_URL = os.getenv(
-    "QDRANT_URL",
-    "https://fd40a02c-5ba1-4d9c-b81a-78e5efef10a5.us-west-1-0.aws.cloud.qdrant.io:6333",
-)
+QDRANT_URL = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "geomind_papers")
 

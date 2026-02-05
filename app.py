@@ -25,7 +25,7 @@ from core.llm import (
     get_provider_config,
 )
 from core.literature import search_papers, format_papers_markdown, format_papers_bibtex
-from core.code_runner import execute_python, extract_code_blocks, format_execution_result, build_fix_prompt
+from core.code_runner import execute_python, extract_code_blocks, extract_markdown_blocks, format_execution_result, build_fix_prompt
 from core.skills import SkillsManager
 from core.memory import ProjectMemory
 
@@ -39,6 +39,43 @@ MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
 
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
+
+
+# ============================================================
+# 用户认证（可选）
+# ============================================================
+
+def _get_users() -> Dict[str, str]:
+    """从环境变量获取用户列表"""
+    users_str = os.getenv("GEOMIND_USERS", "")
+    if not users_str:
+        return {}
+
+    users = {}
+    for pair in users_str.split(","):
+        if ":" in pair:
+            username, password = pair.split(":", 1)
+            users[username.strip()] = password.strip()
+    return users
+
+
+# 只有配置了 CHAINLIT_AUTH_SECRET 才启用认证
+if os.getenv("CHAINLIT_AUTH_SECRET"):
+    @cl.password_auth_callback
+    def auth_callback(username: str, password: str) -> Optional[cl.User]:
+        """密码认证回调"""
+        users = _get_users()
+
+        # 如果没有配置用户，允许任意登录（仅需 secret）
+        if not users:
+            return cl.User(identifier=username, metadata={"role": "user"})
+
+        # 验证用户名密码
+        if username in users and users[username] == password:
+            role = "admin" if username == "admin" else "user"
+            return cl.User(identifier=username, metadata={"role": role})
+
+        return None
 
 
 # ============================================================
@@ -438,10 +475,30 @@ async def on_message(message: cl.Message):
 
     await response_msg.update()
 
+    # ── Artifacts: 提取文档内容 ──
+    doc_artifacts = []
+
+    # 检测 Markdown 文档块（```markdown ... ```）
+    md_blocks = extract_markdown_blocks(full_response)
+    for idx, md_content in enumerate(md_blocks):
+        doc_name = f"document_{idx + 1}.md"
+        md_file = cl.File(
+            name=doc_name,
+            content=md_content.encode("utf-8"),
+            display="side",
+        )
+        doc_artifacts.append(md_file)
+
     # 附加 BibTeX 文件（如果有文献搜索结果）
     if needs_search and "bibtex_element" in dir():
-        # 在 side panel 显示文献列表
         pass  # BibTeX 已通过 Step 展示
+
+    # 如果有文档 Artifacts，发送提示
+    if doc_artifacts:
+        await cl.Message(
+            content="📄 **已生成文档** — 点击右侧面板查看和下载",
+            elements=doc_artifacts,
+        ).send()
 
     # ── Step 4: 自动代码执行 + 重试 ──
     code_blocks = extract_code_blocks(full_response)
@@ -505,25 +562,67 @@ async def _auto_execute_code(
                             content=f"📦 **自动安装了以下依赖：** {', '.join(result['installed'])}"
                         ).send()
 
-                    # 显示输出
-                    if result["output"]:
-                        await cl.Message(
-                            content=f"**执行结果：**\n```\n{result['output']}\n```"
-                        ).send()
+                    # ── Artifacts 风格显示 ──
+                    artifacts = []
 
-                    # 显示图表
+                    # 代码 Artifact（可下载）
+                    code_file = cl.File(
+                        name="code.py",
+                        content=current_code.encode("utf-8"),
+                        display="side",
+                    )
+                    artifacts.append(code_file)
+
+                    # 输出结果 Artifact
+                    if result["output"]:
+                        output_text = cl.Text(
+                            name="📋 执行输出",
+                            content=result["output"],
+                            display="side",
+                        )
+                        artifacts.append(output_text)
+
+                        # 输出文件（可下载）
+                        output_file = cl.File(
+                            name="output.txt",
+                            content=result["output"].encode("utf-8"),
+                            display="side",
+                        )
+                        artifacts.append(output_file)
+
+                    # 图表 Artifacts（Canvas 风格）
                     for img in result["images"]:
                         img_bytes = base64.b64decode(img["data"])
+
+                        # 图片显示（侧边栏 Canvas 风格）
                         image_element = cl.Image(
                             name=img["filename"],
                             content=img_bytes,
-                            display="inline",
+                            display="side",
                             size="large",
                         )
-                        await cl.Message(
-                            content=f"📊 **{img['filename']}**",
-                            elements=[image_element],
-                        ).send()
+                        artifacts.append(image_element)
+
+                        # 图片下载
+                        img_file = cl.File(
+                            name=img["filename"],
+                            content=img_bytes,
+                            display="side",
+                        )
+                        artifacts.append(img_file)
+
+                    # 发送带 Artifacts 的消息
+                    artifact_msg = "✅ **代码执行成功**\n\n"
+                    if result["output"]:
+                        artifact_msg += f"```\n{result['output'][:500]}{'...' if len(result['output']) > 500 else ''}\n```\n\n"
+                    if result["images"]:
+                        artifact_msg += f"📊 生成了 {len(result['images'])} 张图表\n\n"
+                    artifact_msg += "💡 *点击右侧面板查看详情和下载*"
+
+                    await cl.Message(
+                        content=artifact_msg,
+                        elements=artifacts,
+                    ).send()
 
                     break  # 成功，退出重试循环
 

@@ -17,9 +17,13 @@ services:
       - KIMI_API_KEY=${KIMI_API_KEY:-}
       - KIMI_ZEABUR_API_KEY=${KIMI_ZEABUR_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      # 文献检索（可选）
+      # 文献检索（Qdrant）
       - QDRANT_URL=${QDRANT_URL:-}
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-geomind_papers}
+      # 用户认证（可选）
+      - CHAINLIT_AUTH_SECRET=${CHAINLIT_AUTH_SECRET:-}
+      - GEOMIND_USERS=${GEOMIND_USERS:-}
     volumes:
       # 持久化数据（可选）
       - geomind_data:/app/data
