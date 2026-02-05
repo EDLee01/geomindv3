@@ -1,0 +1,26 @@
+Traceback (most recent call last):
+  File "/Users/edward/miniconda3/bin/chainlit", line 5, in <module>
+    from chainlit.cli import cli
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/chainlit/__init__.py", line 18, in <module>
+    from literalai import ChatGeneration, CompletionGeneration, GenerationMessage
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/literalai/__init__.py", line 1, in <module>
+    from literalai.client import AsyncLiteralClient, LiteralClient
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/literalai/client.py", line 7, in <module>
+    from traceloop.sdk import Traceloop
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/traceloop/sdk/__init__.py", line 18, in <module>
+    from traceloop.sdk.logging.logging import LoggerWrapper
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/traceloop/sdk/logging/logging.py", line 14, in <module>
+    from opentelemetry.instrumentation.logging import LoggingInstrumentor
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/opentelemetry/instrumentation/logging/__init__.py", line 62, in <module>
+    from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/opentelemetry/instrumentation/instrumentor.py", line 26, in <module>
+    from opentelemetry.instrumentation._semconv import (
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/opentelemetry/instrumentation/_semconv.py", line 19, in <module>
+    from opentelemetry.instrumentation.utils import http_status_to_status_code
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/opentelemetry/instrumentation/utils.py", line 23, in <module>
+    from wrapt import ObjectProxy
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/wrapt/__init__.py", line 10, in <module>
+    from .decorators import (adapter_factory, AdapterFactory, decorator,
+  File "/Users/edward/miniconda3/lib/python3.11/site-packages/wrapt/decorators.py", line 34, in <module>
+    from inspect import ismethod, isclass, formatargspec
+ImportError: cannot import name 'formatargspec' from 'inspect' (/Users/edward/miniconda3/lib/python3.11/inspect.py)
