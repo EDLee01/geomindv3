@@ -48,8 +48,11 @@ skills_manager = SkillsManager(SKILLS_DIR)
 
 
 # ============================================================
-# 用户认证系统
+# 用户认证系统（可选，需设置 CHAINLIT_AUTH_SECRET 环境变量）
 # ============================================================
+
+# 检查是否启用认证
+AUTH_ENABLED = bool(os.getenv("CHAINLIT_AUTH_SECRET", ""))
 
 def _hash_password(password: str) -> str:
     """对密码进行哈希处理"""
@@ -112,28 +115,30 @@ def _verify_user(username: str, password: str) -> Optional[Dict]:
     return None
 
 
-@cl.password_auth_callback
-async def auth_callback(username: str, password: str) -> Optional[cl.User]:
-    """
-    Chainlit 密码认证回调
+# 只有在设置了 CHAINLIT_AUTH_SECRET 时才启用认证
+if AUTH_ENABLED:
+    @cl.password_auth_callback
+    async def auth_callback(username: str, password: str) -> Optional[cl.User]:
+        """
+        Chainlit 密码认证回调
 
-    支持以下方式配置用户:
-    1. 环境变量 GEOMIND_USERS (JSON 格式)
-    2. 环境变量 GEOMIND_DEFAULT_USER + GEOMIND_DEFAULT_PASSWORD
-    3. users.json 文件
-    """
-    user_data = _verify_user(username, password)
+        支持以下方式配置用户:
+        1. 环境变量 GEOMIND_USERS (JSON 格式)
+        2. 环境变量 GEOMIND_DEFAULT_USER + GEOMIND_DEFAULT_PASSWORD
+        3. users.json 文件
+        """
+        user_data = _verify_user(username, password)
 
-    if user_data:
-        return cl.User(
-            identifier=user_data["username"],
-            metadata={
-                "role": user_data["role"],
-                "name": user_data["name"],
-                "provider": "credentials"
-            }
-        )
-    return None
+        if user_data:
+            return cl.User(
+                identifier=user_data["username"],
+                metadata={
+                    "role": user_data["role"],
+                    "name": user_data["name"],
+                    "provider": "credentials"
+                }
+            )
+        return None
 
 
 @cl.on_chat_resume
