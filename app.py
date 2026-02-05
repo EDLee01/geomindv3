@@ -9,6 +9,7 @@ Features:
 - Skills 系统（.md 知识库）
 - 流式输出
 - 用户登录认证
+- Canvas 侧边栏（代码/图片下载，支持 md/png/pdf）
 """
 
 import chainlit as cl
@@ -31,6 +32,7 @@ from core.literature import search_papers, format_papers_markdown, format_papers
 from core.code_runner import execute_python, extract_code_blocks, format_execution_result, build_fix_prompt
 from core.skills import SkillsManager
 from core.memory import ProjectMemory
+from core.canvas import CanvasManager, extract_canvas_content
 
 # ============================================================
 # 全局配置
@@ -314,6 +316,117 @@ async def on_chat_start():
 
 
 # ============================================================
+# Canvas 侧边栏功能
+# ============================================================
+
+async def send_canvas_downloads(
+    canvas: CanvasManager,
+    response_text: str,
+    images: List[Dict] = None
+):
+    """
+    发送 Canvas 内容和下载链接
+
+    在侧边栏显示代码、图片，并提供多格式下载
+    """
+    elements = []
+
+    # 从响应中提取内容
+    canvas.extract_from_response(response_text)
+
+    # 添加执行生成的图片
+    if images:
+        for img in images:
+            canvas.add_image(img["data"], img["filename"])
+
+    # 如果没有内容，直接返回
+    if not canvas.items:
+        return
+
+    # 生成下载文件
+    download_elements = []
+
+    # 1. 所有代码合并为一个 Markdown
+    code_items = [item for item in canvas.items if item.type == "code"]
+    if code_items:
+        md_content = canvas.to_markdown(code_items)
+        download_elements.append(
+            cl.File(
+                name="code_all.md",
+                content=md_content.encode("utf-8"),
+                display="side",
+            )
+        )
+
+        # 每个代码块单独下载
+        for item in code_items:
+            download_elements.append(
+                cl.File(
+                    name=item.filename,
+                    content=item.content.encode("utf-8"),
+                    display="side",
+                )
+            )
+
+    # 2. 图片下载（PNG + PDF）
+    for item in canvas.images:
+        # PNG
+        download_elements.append(
+            cl.File(
+                name=item.filename,
+                content=base64.b64decode(item.content),
+                display="side",
+            )
+        )
+
+        # PDF（如果可用）
+        downloads = canvas.generate_downloads(item)
+        for filename, content, mime_type in downloads:
+            if filename.endswith(".pdf"):
+                download_elements.append(
+                    cl.File(
+                        name=filename,
+                        content=content,
+                        display="side",
+                    )
+                )
+
+    # 3. 生成完整报告（如果有多个内容）
+    if len(canvas.items) > 1:
+        full_md = canvas.to_markdown()
+        download_elements.append(
+            cl.File(
+                name="geomind_report.md",
+                content=full_md.encode("utf-8"),
+                display="side",
+            )
+        )
+
+        # PDF 报告
+        pdf_bytes = canvas.generate_combined_pdf()
+        if pdf_bytes:
+            download_elements.append(
+                cl.File(
+                    name="geomind_report.pdf",
+                    content=pdf_bytes,
+                    display="side",
+                )
+            )
+
+    # 发送 Canvas 消息
+    if download_elements:
+        # 构建下载列表说明
+        file_list = "\n".join([f"- {el.name}" for el in download_elements[:5]])
+        if len(download_elements) > 5:
+            file_list += f"\n- ...共 {len(download_elements)} 个文件"
+
+        await cl.Message(
+            content=f"📎 **Canvas 下载**\n\n{file_list}",
+            elements=download_elements,
+        ).send()
+
+
+# ============================================================
 # 文件上传处理
 # ============================================================
 
@@ -394,6 +507,10 @@ async def on_message(message: cl.Message):
 
     memory = cl.user_session.get("memory")
     user_text = message.content
+
+    # 初始化 Canvas（每次对话）
+    canvas = CanvasManager()
+    cl.user_session.set("canvas", canvas)
 
     # 处理上传文件
     file_context = ""
@@ -491,14 +608,20 @@ async def on_message(message: cl.Message):
 
     # ── Step 4: 自动代码执行 + 重试 ──
     code_blocks = extract_code_blocks(full_response)
+    collected_images = []  # 收集执行生成的图片
 
     if code_blocks:
-        await _auto_execute_code(
+        collected_images = await _auto_execute_code(
             code_blocks=code_blocks,
             provider=provider,
             system_prompt=system_prompt,
             history=clean_history,
         )
+
+    # ── Step 5: Canvas 侧边栏下载 ──
+    # 只有当有代码块或图片时才显示 Canvas
+    if code_blocks or collected_images:
+        await send_canvas_downloads(canvas, full_response, collected_images)
 
 
 # ============================================================
@@ -510,12 +633,16 @@ async def _auto_execute_code(
     provider: str,
     system_prompt: str,
     history: List[Dict],
-):
+) -> List[Dict]:
     """
     自动执行代码块，失败则让 AI 修复重试
 
     流程: 执行 → 检查 → OK 输出结果 / 失败 → AI 修代码 → 重试（最多 3 轮）
+
+    Returns:
+        收集到的图片列表 [{"data": base64, "filename": str}]
     """
+    collected_images = []  # 收集所有生成的图片
 
     for i, code in enumerate(code_blocks):
         retry_count = 0
@@ -543,7 +670,7 @@ async def _auto_execute_code(
                             content=f"**执行结果：**\n```\n{result['output']}\n```"
                         ).send()
 
-                    # 显示图表
+                    # 显示图表并收集
                     for img in result["images"]:
                         img_bytes = base64.b64decode(img["data"])
                         image_element = cl.Image(
@@ -556,6 +683,9 @@ async def _auto_execute_code(
                             content=f"📊 **{img['filename']}**",
                             elements=[image_element],
                         ).send()
+
+                        # 收集图片用于 Canvas
+                        collected_images.append(img)
 
                     break  # 成功，退出重试循环
 
@@ -600,6 +730,8 @@ async def _auto_execute_code(
                                 content=f"⚠️ AI 未能生成修复代码。原始错误：\n```\n{result['error'][:500]}\n```"
                             ).send()
                             break
+
+    return collected_images
 
 
 # ============================================================
