@@ -61,7 +61,7 @@ if os.getenv("CHAINLIT_AUTH_SECRET"):
     @cl.password_auth_callback
     def auth_callback(username: str, password: str) -> Optional[cl.User]:
         """密码认证回调 - 使用数据库验证"""
-        # 尝试数据库认证
+        # 尝试数据库认证（已有用户登录）
         user = authenticate_user(username, password)
         if user:
             return cl.User(
@@ -73,24 +73,30 @@ if os.getenv("CHAINLIT_AUTH_SECRET"):
                 }
             )
 
-        # 如果数据库中没有用户，检查是否是新用户注册
-        # 格式: username|email （密码作为注册密码）
+        # 用户不存在，自动注册
+        # 支持两种格式：
+        # 1. 用户名|邮箱 - 带邮箱注册
+        # 2. 纯用户名 - 不带邮箱注册
         if "|" in username:
-            parts = username.split("|")
-            if len(parts) == 2:
-                new_username, email = parts
-                result = create_user(new_username, email, password)
-                if result["success"]:
-                    return cl.User(
-                        identifier=new_username,
-                        metadata={
-                            "user_id": result["user_id"],
-                            "email": email,
-                            "role": "user",
-                            "just_registered": True
-                        }
-                    )
+            new_username, email = username.split("|", 1)
+        else:
+            new_username = username
+            email = f"{username}@geomind.local"  # 默认邮箱
 
+        # 创建新用户
+        result = create_user(new_username, email, password)
+        if result["success"]:
+            return cl.User(
+                identifier=new_username,
+                metadata={
+                    "user_id": result["user_id"],
+                    "email": email,
+                    "role": "user",
+                    "just_registered": True
+                }
+            )
+
+        # 如果用户名已存在但密码错误，返回 None
         return None
 
 
