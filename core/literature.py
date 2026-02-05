@@ -59,7 +59,7 @@ def _get_embedding(text: str) -> Optional[List[float]]:
 async def search_papers(
     query: str,
     limit: int = 15,
-    score_threshold: float = 0.65,  # 提高阈值，过滤低相关度结果
+    score_threshold: float = 0.5,  # 降低阈值以获取更多结果
 ) -> Dict:
     """
     搜索 Qdrant 文献库
@@ -76,15 +76,15 @@ async def search_papers(
     qdrant_url = QDRANT_URL.rstrip("/")
     qdrant_key = QDRANT_API_KEY
 
-    # 调试信息
-    debug_info = f"Qdrant URL: {qdrant_url[:50]}..., Collection: {COLLECTION_NAME}"
+    # 调试信息 - 更详细
+    debug_info = f"URL配置: {'✅' if qdrant_url else '❌'}, KEY配置: {'✅' if qdrant_key else '❌'}, Collection: {COLLECTION_NAME}"
 
     if not qdrant_url or not qdrant_key:
         return {
             "success": False,
             "papers": [],
             "total": 0,
-            "error": f"Qdrant 未配置。请设置 QDRANT_URL 和 QDRANT_API_KEY 环境变量。",
+            "error": f"Qdrant 未配置。URL: {'已设置' if qdrant_url else '未设置'}, KEY: {'已设置' if qdrant_key else '未设置'}",
             "debug": debug_info
         }
 

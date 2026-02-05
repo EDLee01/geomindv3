@@ -524,6 +524,13 @@ async def on_message(message: cl.Message):
             elif result["success"] and not result["papers"]:
                 debug_msg = result.get("debug", "")
                 step.output = f"⚠️ 在 Qdrant 数据库中未找到相关文献\n调试: {debug_msg}"
+                # 发送一条消息让用户看到调试信息
+                await cl.Message(
+                    content=f"📭 **文献检索结果为空**\n\n"
+                    f"在 Qdrant 数据库中未找到与 `{user_text[:50]}...` 匹配的论文。\n\n"
+                    f"**调试信息**: {debug_msg}\n\n"
+                    f"建议：尝试使用英文关键词或更宽泛的搜索词。"
+                ).send()
                 literature_context = """
 
 [文献检索结果 - 来自 Qdrant 数据库]
@@ -536,6 +543,12 @@ async def on_message(message: cl.Message):
                 error_msg = result.get("error", "检索出错")
                 debug_msg = result.get("debug", "")
                 step.output = f"⚠️ {error_msg}\n调试: {debug_msg}"
+                # 发送错误消息给用户
+                await cl.Message(
+                    content=f"❌ **文献检索失败**\n\n"
+                    f"错误: {error_msg}\n\n"
+                    f"**调试信息**: {debug_msg}"
+                ).send()
                 literature_context = f"""
 
 [文献检索失败]
