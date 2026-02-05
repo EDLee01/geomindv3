@@ -111,8 +111,9 @@ async def search_papers(
             "with_payload": True,
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
+        # 使用同步客户端避免 anyio 异步兼容性问题
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
                 f"{qdrant_url}/collections/{COLLECTION_NAME}/points/search",
                 headers=headers,
                 json=payload,
