@@ -1,0 +1,47 @@
+# GeoMind Chainlit 配置
+# https://docs.chainlit.io/backend/config/settings
+
+[project]
+# 启用 telemetry（可设为 false 关闭）
+enable_telemetry = false
+
+# 会话超时（秒）
+user_env = []
+
+# 允许用户上传文件
+allow_origins = ["*"]
+
+[UI]
+# 应用名称（显示在标题栏）
+name = "GeoMind"
+
+# 默认展开消息（false 则折叠长消息）
+default_expand_messages = true
+
+# 显示 GitHub 链接（可选）
+# github = "https://github.com/your-repo"
+
+# 自定义 CSS（可选）
+# custom_css = "/public/custom.css"
+
+# 自定义 JS（可选）
+# custom_js = "/public/custom.js"
+
+# 自定义 favicon
+# custom_favicon = "/public/favicon.ico"
+
+[features]
+# 启用多模态（上传图片等）
+multi_modal = true
+
+# 启用语音输入（需要浏览器支持）
+speech_to_text = false
+
+# 启用 LaTeX 渲染
+latex = true
+
+# 不显示 "Powered by Chainlit"（需要付费版）
+# hide_cot = true
+
+[meta]
+generated_by = "GeoMind 4.0"
