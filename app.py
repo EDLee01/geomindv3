@@ -184,10 +184,22 @@ async def on_chat_start():
     cl.user_session.set("memory", memory)
     cl.user_session.set("provider", profile)
 
+    # 获取所有已配置的提供商
+    available_providers = get_available_providers()
+
     # 获取当前提供商的配置
     config = MODEL_PROVIDERS.get(profile, {})
     default_model = config.get("default_model", "")
-    available_models = config.get("models", [default_model])
+
+    # 构建所有可用模型的列表（格式: "提供商: 模型名"）
+    all_models = []
+    for provider_name in available_providers:
+        provider_config = MODEL_PROVIDERS.get(provider_name, {})
+        for model in provider_config.get("models", []):
+            all_models.append(f"{provider_name}: {model}")
+
+    # 当前选择的模型
+    current_selection = f"{profile}: {default_model}"
 
     # 初始化设置
     cl.user_session.set("current_model", default_model)
@@ -199,9 +211,9 @@ async def on_chat_start():
         [
             cl.input_widget.Select(
                 id="model",
-                label="🤖 模型选择",
-                values=available_models,
-                initial_value=default_model,
+                label="🤖 模型选择（服务: 模型）",
+                values=all_models,
+                initial_value=current_selection,
             ),
             cl.input_widget.Slider(
                 id="temperature",
@@ -231,7 +243,7 @@ async def on_chat_start():
         f"- 📊 分析数据、执行代码\n"
         f"- 📈 生成学术级图表\n"
         f"- ✍️ 辅助论文写作\n\n"
-        f"💡 **提示**: 点击右上角 ⚙️ 齿轮图标可以调整模型设置\n\n"
+        f"💡 **提示**: 点击输入框旁的 ⚙️ 齿轮图标可以切换模型和调整设置\n\n"
         f"直接告诉我你的需求吧！"
     ).send()
 
@@ -568,9 +580,15 @@ async def _auto_execute_code(
 @cl.on_settings_update
 async def on_settings_update(settings):
     """处理用户修改设置"""
-    # 更新模型选择
+    # 更新模型选择（格式: "提供商: 模型"）
     if "model" in settings:
-        cl.user_session.set("current_model", settings["model"])
+        model_str = settings["model"]
+        if ": " in model_str:
+            provider, model = model_str.split(": ", 1)
+            cl.user_session.set("provider", provider)
+            cl.user_session.set("current_model", model)
+        else:
+            cl.user_session.set("current_model", model_str)
 
     # 更新温度
     if "temperature" in settings:
@@ -581,12 +599,18 @@ async def on_settings_update(settings):
         cl.user_session.set("max_tokens", int(settings["max_tokens"]))
 
     # 显示设置更新提示
-    model = settings.get("model", cl.user_session.get("current_model", "未知"))
+    provider = cl.user_session.get("provider", "未知")
+    model = cl.user_session.get("current_model", "未知")
     temp = settings.get("temperature", cl.user_session.get("temperature", 0.7))
     tokens = settings.get("max_tokens", cl.user_session.get("max_tokens", 4096))
 
+    # 获取提供商图标
+    config = MODEL_PROVIDERS.get(provider, {})
+    icon = config.get("icon", "🤖")
+
     await cl.Message(
         content=f"⚙️ **设置已更新**\n"
+        f"- 服务: {icon} **{provider}**\n"
         f"- 模型: `{model}`\n"
         f"- 温度: `{temp}`\n"
         f"- 最大输出: `{int(tokens)}` tokens"
