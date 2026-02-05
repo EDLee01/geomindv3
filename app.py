@@ -209,9 +209,14 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
         return ""
 
     context_parts = []
+    uploaded_files_list = []  # 保存文件信息用于代码执行
+
     for f in files:
         name = f.name
         ext = Path(name).suffix.lower()
+
+        # 保存文件信息（路径和名称）
+        uploaded_files_list.append({"name": name, "path": f.path})
 
         if ext in (".xlsx", ".xls", ".csv"):
             try:
@@ -229,6 +234,7 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
                     f"- 列名: {', '.join(df.columns.tolist())}\n"
                     f"- 数据类型:\n{df.dtypes.to_string()}\n"
                     f"- 前 5 行预览:\n{preview}\n"
+                    f"- **代码中请使用文件名: '{name}'**\n"
                 )
                 context_parts.append(desc)
 
@@ -261,6 +267,11 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
 
         else:
             context_parts.append(f"\n[已上传文件: {name} (类型: {ext})]\n")
+
+    # 保存上传文件列表到 session，供代码执行时使用
+    existing_files = cl.user_session.get("uploaded_files") or []
+    existing_files.extend(uploaded_files_list)
+    cl.user_session.set("uploaded_files", existing_files)
 
     return "\n".join(context_parts)
 
@@ -403,6 +414,9 @@ async def _auto_execute_code(
     流程: 执行 → 检查 → OK 输出结果 / 失败 → AI 修代码 → 重试（最多 3 轮）
     """
 
+    # 获取上传的文件列表
+    uploaded_files = cl.user_session.get("uploaded_files") or []
+
     for i, code in enumerate(code_blocks):
         retry_count = 0
         current_code = code
@@ -417,11 +431,17 @@ async def _auto_execute_code(
             async with cl.Step(name=step_name, type="run") as step:
                 step.input = f"```python\n{current_code[:500]}{'...' if len(current_code) > 500 else ''}\n```"
 
-                result = execute_python(current_code)
+                result = execute_python(current_code, uploaded_files=uploaded_files)
 
                 if result["success"]:
                     # ✅ 执行成功
                     step.output = format_execution_result(result)
+
+                    # 显示自动安装的包
+                    if result.get("installed"):
+                        await cl.Message(
+                            content=f"📦 **自动安装了以下依赖：** {', '.join(result['installed'])}"
+                        ).send()
 
                     # 显示输出
                     if result["output"]:

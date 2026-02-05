@@ -1,6 +1,10 @@
 """
 GeoMind Core - Python 代码执行器
 自动执行 → 检查结果 → 失败则修代码重试（最多 3 轮）
+
+功能：
+- 自动检测并安装缺失的依赖库
+- 支持将上传文件复制到执行目录
 """
 
 import subprocess
@@ -8,8 +12,73 @@ import tempfile
 import base64
 import re
 import sys
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+# ============================================================
+# 依赖库自动安装
+# ============================================================
+
+# 常见 import 名 -> pip 包名 映射
+IMPORT_TO_PACKAGE = {
+    "sklearn": "scikit-learn",
+    "cv2": "opencv-python",
+    "PIL": "Pillow",
+    "skimage": "scikit-image",
+}
+
+
+def detect_missing_module(error: str) -> Optional[str]:
+    """
+    从错误信息中检测缺失的模块名
+
+    Returns:
+        模块名（如果是 ModuleNotFoundError），否则返回 None
+    """
+    patterns = [
+        r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]",
+        r"ImportError: No module named ['\"]([^'\"]+)['\"]",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error)
+        if match:
+            module = match.group(1).split(".")[0]  # 取顶层模块名
+            return module
+    return None
+
+
+def install_package(module_name: str) -> Dict:
+    """
+    使用 pip 安装缺失的包
+
+    Args:
+        module_name: 模块名
+
+    Returns:
+        {"success": bool, "message": str}
+    """
+    # 转换为 pip 包名
+    package_name = IMPORT_TO_PACKAGE.get(module_name, module_name)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", package_name],
+            capture_output=True,
+            text=True,
+            timeout=120,  # 安装超时 2 分钟
+        )
+
+        if result.returncode == 0:
+            return {"success": True, "message": f"✅ 已自动安装: {package_name}"}
+        else:
+            return {"success": False, "message": f"❌ 安装失败: {result.stderr[:500]}"}
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "message": f"❌ 安装超时: {package_name}"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ 安装错误: {str(e)}"}
 
 
 # ============================================================
@@ -37,6 +106,8 @@ def execute_python(
     code: str,
     timeout: int = 30,
     work_dir: str = None,
+    uploaded_files: List[Dict] = None,
+    auto_install: bool = True,
 ) -> Dict:
     """
     执行 Python 代码
@@ -45,6 +116,8 @@ def execute_python(
         code: Python 代码字符串
         timeout: 超时秒数
         work_dir: 工作目录（可选，默认临时目录）
+        uploaded_files: 上传的文件列表 [{"name": "xxx.xlsx", "path": "/tmp/xxx"}]
+        auto_install: 是否自动安装缺失的依赖（默认 True）
 
     Returns:
         {
@@ -53,10 +126,11 @@ def execute_python(
             "error": str | None, # stderr（失败时）
             "images": [          # matplotlib 生成的图片
                 {"filename": "xxx.png", "data": "base64..."}
-            ]
+            ],
+            "installed": [str]   # 自动安装的包列表
         }
     """
-    result = {"success": False, "output": "", "error": None, "images": []}
+    result = {"success": False, "output": "", "error": None, "images": [], "installed": []}
 
     try:
         # 创建临时目录（或使用指定目录）
@@ -70,25 +144,53 @@ def execute_python(
             cleanup = True
 
         try:
+            # 复制上传的文件到执行目录
+            if uploaded_files:
+                for f in uploaded_files:
+                    src_path = Path(f["path"])
+                    if src_path.exists():
+                        dst_path = Path(tmpdir) / f["name"]
+                        shutil.copy2(src_path, dst_path)
+
             # 注入 matplotlib 配置 + 用户代码
             full_code = MATPLOTLIB_SETUP + "\n" + code
 
             code_file = Path(tmpdir) / "script.py"
             code_file.write_text(full_code, encoding="utf-8")
 
-            proc = subprocess.run(
-                [sys.executable, str(code_file)],
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            # 执行代码（支持自动安装依赖重试）
+            max_install_retries = 3
+            install_retries = 0
 
-            result["output"] = proc.stdout.strip()
-            result["success"] = proc.returncode == 0
+            while install_retries <= max_install_retries:
+                proc = subprocess.run(
+                    [sys.executable, str(code_file)],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
 
-            if proc.returncode != 0:
-                result["error"] = proc.stderr.strip()
+                result["output"] = proc.stdout.strip()
+                result["success"] = proc.returncode == 0
+
+                if proc.returncode != 0:
+                    stderr = proc.stderr.strip()
+                    result["error"] = stderr
+
+                    # 检测是否是缺失模块错误
+                    if auto_install and install_retries < max_install_retries:
+                        missing_module = detect_missing_module(stderr)
+                        if missing_module:
+                            install_result = install_package(missing_module)
+                            if install_result["success"]:
+                                result["installed"].append(missing_module)
+                                install_retries += 1
+                                continue  # 安装成功，重试执行
+
+                    break  # 不是模块缺失或安装失败，退出循环
+                else:
+                    break  # 执行成功，退出循环
 
             # 收集生成的图片
             for img_file in sorted(Path(tmpdir).glob("*.png")):
