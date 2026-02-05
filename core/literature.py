@@ -1,12 +1,11 @@
 """
 GeoMind Core - 文献检索模块
-Qdrant REST API 直接调用（无需 torch/sentence-transformers）
+使用 qdrant-client 官方库（替代 httpx REST API）
 """
 
-import httpx
 import os
 from typing import List, Dict, Optional
-
+from qdrant_client import QdrantClient
 
 # ============================================================
 # 配置
@@ -16,8 +15,32 @@ QDRANT_URL = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "geomind_papers")
 
-# Embedding 模型缓存
+# 缓存
 _embedding_model = None
+_qdrant_client: Optional[QdrantClient] = None
+
+
+# ============================================================
+# Qdrant Client 单例
+# ============================================================
+
+def _get_qdrant_client() -> Optional[QdrantClient]:
+    """获取/复用 Qdrant 客户端"""
+    global _qdrant_client
+
+    if _qdrant_client is not None:
+        return _qdrant_client
+
+    qdrant_url = QDRANT_URL.rstrip("/")
+    if not qdrant_url:
+        return None
+
+    _qdrant_client = QdrantClient(
+        url=qdrant_url,
+        api_key=QDRANT_API_KEY if QDRANT_API_KEY else None,
+        timeout=30,
+    )
+    return _qdrant_client
 
 
 # ============================================================
@@ -59,10 +82,10 @@ def _get_embedding(text: str) -> Optional[List[float]]:
 async def search_papers(
     query: str,
     limit: int = 15,
-    score_threshold: float = 0.5,  # 降低阈值以获取更多结果
+    score_threshold: float = 0.5,
 ) -> Dict:
     """
-    搜索 Qdrant 文献库
+    搜索 Qdrant 文献库（使用 qdrant-client）
 
     Returns:
         {
@@ -70,22 +93,20 @@ async def search_papers(
             "papers": [...],
             "total": int,
             "error": str | None,
-            "debug": str | None  # 调试信息
+            "debug": str | None
         }
     """
-    qdrant_url = QDRANT_URL.rstrip("/")
-    qdrant_key = QDRANT_API_KEY
+    debug_info = f"URL配置: {'✅' if QDRANT_URL else '❌'}, KEY配置: {'✅' if QDRANT_API_KEY else '❌'}, Collection: {COLLECTION_NAME}"
 
-    # 调试信息 - 更详细
-    debug_info = f"URL配置: {'✅' if qdrant_url else '❌'}, KEY配置: {'✅' if qdrant_key else '❌'}, Collection: {COLLECTION_NAME}"
-
-    if not qdrant_url or not qdrant_key:
+    # 获取客户端
+    client = _get_qdrant_client()
+    if client is None:
         return {
             "success": False,
             "papers": [],
             "total": 0,
-            "error": f"Qdrant 未配置。URL: {'已设置' if qdrant_url else '未设置'}, KEY: {'已设置' if qdrant_key else '未设置'}",
-            "debug": debug_info
+            "error": "Qdrant 未配置。请设置 QDRANT_URL 和 QDRANT_API_KEY 环境变量。",
+            "debug": debug_info,
         }
 
     # 生成向量
@@ -96,55 +117,37 @@ async def search_papers(
             "papers": [],
             "total": 0,
             "error": "Embedding 模型未安装。请运行: pip install fastembed",
-            "debug": debug_info
+            "debug": debug_info,
         }
 
     debug_info += f", Query: '{query[:50]}...', Vector dim: {len(query_vector)}"
 
-    # 调用 Qdrant REST API
+    # 调用 qdrant-client 搜索
     try:
-        headers = {"Content-Type": "application/json", "api-key": qdrant_key}
-        payload = {
-            "vector": query_vector,
-            "limit": limit,
-            "score_threshold": score_threshold,
-            "with_payload": True,
-        }
+        results = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
 
-        # 使用同步客户端避免 anyio 异步兼容性问题
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                f"{qdrant_url}/collections/{COLLECTION_NAME}/points/search",
-                headers=headers,
-                json=payload,
-            )
+        hits = results.points
+        debug_info += f", Raw results: {len(hits)}"
 
-        if resp.status_code != 200:
-            return {
-                "success": False,
-                "papers": [],
-                "total": 0,
-                "error": f"Qdrant 错误 ({resp.status_code}): {resp.text[:200]}",
-                "debug": debug_info
-            }
-
-        results = resp.json().get("result", [])
-        debug_info += f", Raw results: {len(results)}"
-
-        if not results:
+        if not hits:
             return {
                 "success": True,
                 "papers": [],
                 "total": 0,
                 "error": None,
-                "debug": debug_info + " (无结果，可能是阈值太高或查询词不匹配)"
+                "debug": debug_info + " (无结果，可能是阈值太高或查询词不匹配)",
             }
 
         # 解析结果
         papers = []
-        for hit in results:
-            p = hit.get("payload", {})
-            score = hit.get("score", 0)
+        for hit in hits:
+            p = hit.payload or {}
+            score = hit.score or 0
 
             # 作者处理
             authors_raw = p.get("authors", [])
@@ -167,7 +170,6 @@ async def search_papers(
             else:
                 author_display = f"{author_names[0]} et al."
 
-            # DOI 已是完整 URL
             doi = (p.get("doi", "") or "").strip()
 
             papers.append(
@@ -187,10 +189,22 @@ async def search_papers(
             )
 
         debug_info += f", Filtered papers: {len(papers)}"
-        return {"success": True, "papers": papers, "total": len(papers), "error": None, "debug": debug_info}
+        return {
+            "success": True,
+            "papers": papers,
+            "total": len(papers),
+            "error": None,
+            "debug": debug_info,
+        }
 
     except Exception as e:
-        return {"success": False, "papers": [], "total": 0, "error": str(e), "debug": debug_info}
+        return {
+            "success": False,
+            "papers": [],
+            "total": 0,
+            "error": str(e),
+            "debug": debug_info,
+        }
 
 
 # ============================================================
@@ -205,12 +219,10 @@ def format_papers_markdown(papers: List[Dict], max_display: int = 15) -> str:
     lines = [f"### 📚 检索到 {len(papers)} 篇相关文献\n"]
 
     for i, p in enumerate(papers[:max_display], 1):
-        # 基本信息
         line = f"**[{i}]** {p['author_display']} ({p['year']}). "
         line += f"*{p['title']}*. "
         line += f"{p['journal']}."
 
-        # 附加信息
         extras = []
         if p.get("citations"):
             extras.append(f"引用: {p['citations']}")
@@ -221,7 +233,6 @@ def format_papers_markdown(papers: List[Dict], max_display: int = 15) -> str:
         if extras:
             line += f" ({', '.join(extras)})"
 
-        # DOI 链接
         if p.get("doi"):
             line += f"\n   🔗 [DOI]({p['doi']})"
 

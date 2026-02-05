@@ -6,6 +6,9 @@ chainlit>=2.0.0
 # ── HTTP 客户端 ──
 httpx>=0.25.0
 
+# ── Qdrant 向量数据库 ──
+qdrant-client>=1.7.0
+
 # ── Embedding（文献检索，二选一） ──
 fastembed>=0.3.0          # 推荐：轻量，不依赖 torch
 # sentence-transformers   # 备选：更完整但更重
