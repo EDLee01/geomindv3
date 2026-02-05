@@ -2,6 +2,7 @@
 
 # ── 核心框架 ──
 chainlit>=2.0.0
+wrapt>=1.15.0             # Python 3.11 兼容性修复
 
 # ── LLM 客户端 ──
 openai>=1.0.0             # OpenAI 兼容 API 调用
