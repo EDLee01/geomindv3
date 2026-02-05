@@ -312,7 +312,7 @@ async def on_chat_start():
     # 初始化设置
     cl.user_session.set("current_model", default_model)
     cl.user_session.set("temperature", 0.7)
-    cl.user_session.set("max_tokens", 4096)
+    cl.user_session.set("max_tokens", 8192)  # 默认更大的输出长度
 
     # 创建设置面板
     settings = await cl.ChatSettings(
@@ -334,10 +334,10 @@ async def on_chat_start():
             cl.input_widget.Slider(
                 id="max_tokens",
                 label="📝 最大输出长度 (Max Tokens)",
-                initial=4096,
-                min=256,
-                max=8192,
-                step=256,
+                initial=8192,
+                min=1024,
+                max=16384,
+                step=1024,
             ),
         ]
     ).send()
