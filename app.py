@@ -8,12 +8,16 @@ Features:
 - 代码自动执行 + 失败重试
 - Skills 系统（.md 知识库）
 - 流式输出
+- 用户登录认证
 """
 
 import chainlit as cl
+from chainlit.types import ThreadDict
 import os
 import re
 import base64
+import json
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -35,9 +39,112 @@ from core.memory import ProjectMemory
 BASE_DIR = Path(__file__).parent
 SKILLS_DIR = BASE_DIR / "skills"
 MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
+USERS_FILE = BASE_DIR / "users.json"  # 用户数据文件
 
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
+
+
+# ============================================================
+# 用户认证系统
+# ============================================================
+
+def _hash_password(password: str) -> str:
+    """对密码进行哈希处理"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _load_users() -> Dict:
+    """加载用户数据"""
+    # 优先从环境变量读取用户配置（Zeabur 部署）
+    env_users = os.getenv("GEOMIND_USERS", "")
+    if env_users:
+        try:
+            return json.loads(env_users)
+        except json.JSONDecodeError:
+            pass
+
+    # 从文件读取
+    if USERS_FILE.exists():
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # 默认用户（如果配置了环境变量）
+    default_user = os.getenv("GEOMIND_DEFAULT_USER", "")
+    default_pass = os.getenv("GEOMIND_DEFAULT_PASSWORD", "")
+
+    if default_user and default_pass:
+        return {
+            default_user: {
+                "password": _hash_password(default_pass),
+                "role": "admin",
+                "name": default_user
+            }
+        }
+
+    return {}
+
+
+def _save_users(users: Dict):
+    """保存用户数据到文件"""
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, indent=2, ensure_ascii=False)
+
+
+def _verify_user(username: str, password: str) -> Optional[Dict]:
+    """验证用户凭据"""
+    users = _load_users()
+
+    if username in users:
+        user_data = users[username]
+        hashed = _hash_password(password)
+        if user_data.get("password") == hashed:
+            return {
+                "username": username,
+                "role": user_data.get("role", "user"),
+                "name": user_data.get("name", username)
+            }
+    return None
+
+
+@cl.password_auth_callback
+async def auth_callback(username: str, password: str) -> Optional[cl.User]:
+    """
+    Chainlit 密码认证回调
+
+    支持以下方式配置用户:
+    1. 环境变量 GEOMIND_USERS (JSON 格式)
+    2. 环境变量 GEOMIND_DEFAULT_USER + GEOMIND_DEFAULT_PASSWORD
+    3. users.json 文件
+    """
+    user_data = _verify_user(username, password)
+
+    if user_data:
+        return cl.User(
+            identifier=user_data["username"],
+            metadata={
+                "role": user_data["role"],
+                "name": user_data["name"],
+                "provider": "credentials"
+            }
+        )
+    return None
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    """恢复历史会话"""
+    # 重新初始化 Memory
+    memory = ProjectMemory("default", name="恢复的对话")
+    cl.user_session.set("memory", memory)
+
+    # 恢复用户选择的模型
+    profile = cl.user_session.get("chat_profile")
+    if profile:
+        cl.user_session.set("provider", profile)
 
 
 # ============================================================
@@ -161,6 +268,12 @@ async def starters():
 async def on_chat_start():
     """对话启动时初始化"""
 
+    # 获取当前登录用户
+    user = cl.user_session.get("user")
+    user_name = "访客"
+    if user:
+        user_name = user.metadata.get("name", user.identifier)
+
     # 获取当前选择的模型
     profile = cl.user_session.get("chat_profile")
     if not profile or profile == "未配置":
@@ -178,8 +291,9 @@ async def on_chat_start():
         ).send()
         return
 
-    # 初始化 Memory
-    memory = ProjectMemory("default", name="快速对话")
+    # 初始化 Memory（使用用户标识）
+    user_id = user.identifier if user else "default"
+    memory = ProjectMemory(user_id, name="快速对话")
     cl.user_session.set("memory", memory)
     cl.user_session.set("provider", profile)
 
@@ -188,7 +302,7 @@ async def on_chat_start():
     model_name = config.get("default_model", "unknown")
 
     await cl.Message(
-        content=f"👋 你好！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
+        content=f"👋 你好，**{user_name}**！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
         f"当前模型: **{profile}** (`{model_name}`)\n\n"
         f"我可以帮你：\n"
         f"- 🔍 检索 70 万+ 验证论文\n"
