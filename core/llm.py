@@ -31,13 +31,22 @@ MODEL_PROVIDERS = {
         "description": "Claude via Zeabur AI Hub（国内可用）",
         "icon": "🔵",
     },
+    "Kimi (Zeabur)": {
+        "env_key": "KIMI_ZEABUR_API_KEY",
+        "base_url": "https://hnd1.aihub.zeabur.ai/v1",
+        "models": ["kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k"],
+        "default_model": "kimi-k2.5",
+        "format": "openai",
+        "description": "Kimi via Zeabur AI Hub（国内可用）",
+        "icon": "🟣",
+    },
     "Kimi": {
         "env_key": "KIMI_API_KEY",
         "base_url": "https://api.moonshot.cn/v1",
         "models": ["kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
         "default_model": "kimi-k2.5",
         "format": "openai",
-        "description": "Moonshot Kimi · 1M 超长上下文",
+        "description": "Moonshot Kimi（需直连）",
         "icon": "🟣",
     },
     "DeepSeek": {
