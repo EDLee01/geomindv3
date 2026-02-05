@@ -33,6 +33,7 @@ from core.database import (
     create_user,
     authenticate_user,
     get_user_by_id,
+    user_exists,
     create_conversation,
     get_user_conversations,
     add_message,
@@ -61,42 +62,48 @@ if os.getenv("CHAINLIT_AUTH_SECRET"):
     @cl.password_auth_callback
     def auth_callback(username: str, password: str) -> Optional[cl.User]:
         """密码认证回调 - 使用数据库验证"""
+        # 解析用户名格式
+        # 支持两种格式：
+        # 1. 用户名|邮箱 - 带邮箱注册
+        # 2. 纯用户名 - 不带邮箱
+        if "|" in username:
+            actual_username, email = username.split("|", 1)
+        else:
+            actual_username = username
+            email = f"{username}@geomind.local"  # 默认邮箱
+
         # 尝试数据库认证（已有用户登录）
-        user = authenticate_user(username, password)
+        user = authenticate_user(actual_username, password)
         if user:
             return cl.User(
                 identifier=user["username"],
                 metadata={
                     "user_id": user["id"],
                     "email": user["email"],
-                    "role": "admin" if username == "admin" else "user"
+                    "role": "admin" if actual_username == "admin" else "user",
+                    "just_registered": False  # 明确标记：不是新注册
                 }
             )
 
-        # 用户不存在，自动注册
-        # 支持两种格式：
-        # 1. 用户名|邮箱 - 带邮箱注册
-        # 2. 纯用户名 - 不带邮箱注册
-        if "|" in username:
-            new_username, email = username.split("|", 1)
-        else:
-            new_username = username
-            email = f"{username}@geomind.local"  # 默认邮箱
+        # 检查用户是否已存在（密码错误的情况）
+        if user_exists(actual_username):
+            # 用户存在但密码错误，返回 None
+            return None
 
-        # 创建新用户
-        result = create_user(new_username, email, password)
+        # 用户不存在，自动注册
+        result = create_user(actual_username, email, password)
         if result["success"]:
             return cl.User(
-                identifier=new_username,
+                identifier=actual_username,
                 metadata={
                     "user_id": result["user_id"],
                     "email": email,
                     "role": "user",
-                    "just_registered": True
+                    "just_registered": True  # 真正的新注册
                 }
             )
 
-        # 如果用户名已存在但密码错误，返回 None
+        # 注册失败
         return None
 
 
@@ -515,7 +522,8 @@ async def on_message(message: cl.Message):
                 )
                 # 将在最终消息中附加
             elif result["success"] and not result["papers"]:
-                step.output = "⚠️ 在 Qdrant 数据库中未找到相关文献"
+                debug_msg = result.get("debug", "")
+                step.output = f"⚠️ 在 Qdrant 数据库中未找到相关文献\n调试: {debug_msg}"
                 literature_context = """
 
 [文献检索结果 - 来自 Qdrant 数据库]
@@ -526,7 +534,8 @@ async def on_message(message: cl.Message):
 """
             else:
                 error_msg = result.get("error", "检索出错")
-                step.output = f"⚠️ {error_msg}"
+                debug_msg = result.get("debug", "")
+                step.output = f"⚠️ {error_msg}\n调试: {debug_msg}"
                 literature_context = f"""
 
 [文献检索失败]

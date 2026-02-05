@@ -59,7 +59,7 @@ def _get_embedding(text: str) -> Optional[List[float]]:
 async def search_papers(
     query: str,
     limit: int = 15,
-    score_threshold: float = 0.5,
+    score_threshold: float = 0.65,  # 提高阈值，过滤低相关度结果
 ) -> Dict:
     """
     搜索 Qdrant 文献库
@@ -69,14 +69,24 @@ async def search_papers(
             "success": bool,
             "papers": [...],
             "total": int,
-            "error": str | None
+            "error": str | None,
+            "debug": str | None  # 调试信息
         }
     """
     qdrant_url = QDRANT_URL.rstrip("/")
     qdrant_key = QDRANT_API_KEY
 
+    # 调试信息
+    debug_info = f"Qdrant URL: {qdrant_url[:50]}..., Collection: {COLLECTION_NAME}"
+
     if not qdrant_url or not qdrant_key:
-        return {"success": False, "papers": [], "total": 0, "error": "Qdrant 未配置"}
+        return {
+            "success": False,
+            "papers": [],
+            "total": 0,
+            "error": f"Qdrant 未配置。请设置 QDRANT_URL 和 QDRANT_API_KEY 环境变量。",
+            "debug": debug_info
+        }
 
     # 生成向量
     query_vector = _get_embedding(query)
@@ -86,7 +96,10 @@ async def search_papers(
             "papers": [],
             "total": 0,
             "error": "Embedding 模型未安装。请运行: pip install fastembed",
+            "debug": debug_info
         }
+
+    debug_info += f", Query: '{query[:50]}...', Vector dim: {len(query_vector)}"
 
     # 调用 Qdrant REST API
     try:
@@ -111,12 +124,20 @@ async def search_papers(
                 "papers": [],
                 "total": 0,
                 "error": f"Qdrant 错误 ({resp.status_code}): {resp.text[:200]}",
+                "debug": debug_info
             }
 
         results = resp.json().get("result", [])
+        debug_info += f", Raw results: {len(results)}"
 
         if not results:
-            return {"success": True, "papers": [], "total": 0, "error": None}
+            return {
+                "success": True,
+                "papers": [],
+                "total": 0,
+                "error": None,
+                "debug": debug_info + " (无结果，可能是阈值太高或查询词不匹配)"
+            }
 
         # 解析结果
         papers = []
@@ -164,10 +185,11 @@ async def search_papers(
                 }
             )
 
-        return {"success": True, "papers": papers, "total": len(papers), "error": None}
+        debug_info += f", Filtered papers: {len(papers)}"
+        return {"success": True, "papers": papers, "total": len(papers), "error": None, "debug": debug_info}
 
     except Exception as e:
-        return {"success": False, "papers": [], "total": 0, "error": str(e)}
+        return {"success": False, "papers": [], "total": 0, "error": str(e), "debug": debug_info}
 
 
 # ============================================================

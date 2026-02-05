@@ -165,6 +165,18 @@ def get_user_by_id(user_id: int) -> Optional[Dict]:
     return None
 
 
+def user_exists(username: str) -> bool:
+    """检查用户名是否已存在"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+    exists = cursor.fetchone() is not None
+    conn.close()
+
+    return exists
+
+
 # ============================================================
 # 对话管理
 # ============================================================
