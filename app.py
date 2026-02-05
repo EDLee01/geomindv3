@@ -22,6 +22,7 @@ from core.llm import (
     get_available_providers,
     stream_llm,
     call_llm,
+    get_provider_config,
 )
 from core.literature import search_papers, format_papers_markdown, format_papers_bibtex
 from core.code_runner import execute_python, extract_code_blocks, format_execution_result, build_fix_prompt
@@ -183,18 +184,54 @@ async def on_chat_start():
     cl.user_session.set("memory", memory)
     cl.user_session.set("provider", profile)
 
-    # 欢迎消息
+    # 获取当前提供商的配置
     config = MODEL_PROVIDERS.get(profile, {})
-    model_name = config.get("default_model", "unknown")
+    default_model = config.get("default_model", "")
+    available_models = config.get("models", [default_model])
 
+    # 初始化设置
+    cl.user_session.set("current_model", default_model)
+    cl.user_session.set("temperature", 0.7)
+    cl.user_session.set("max_tokens", 4096)
+
+    # 创建设置面板
+    settings = await cl.ChatSettings(
+        [
+            cl.input_widget.Select(
+                id="model",
+                label="🤖 模型选择",
+                values=available_models,
+                initial_value=default_model,
+            ),
+            cl.input_widget.Slider(
+                id="temperature",
+                label="🌡️ 温度 (Temperature)",
+                initial=0.7,
+                min=0,
+                max=1,
+                step=0.1,
+            ),
+            cl.input_widget.Slider(
+                id="max_tokens",
+                label="📝 最大输出长度 (Max Tokens)",
+                initial=4096,
+                min=256,
+                max=8192,
+                step=256,
+            ),
+        ]
+    ).send()
+
+    # 欢迎消息
     await cl.Message(
         content=f"👋 你好！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
-        f"当前模型: **{profile}** (`{model_name}`)\n\n"
+        f"当前模型: **{profile}** (`{default_model}`)\n\n"
         f"我可以帮你：\n"
         f"- 🔍 检索 70 万+ 验证论文\n"
         f"- 📊 分析数据、执行代码\n"
         f"- 📈 生成学术级图表\n"
         f"- ✍️ 辅助论文写作\n\n"
+        f"💡 **提示**: 点击右上角 ⚙️ 齿轮图标可以调整模型设置\n\n"
         f"直接告诉我你的需求吧！"
     ).send()
 
@@ -366,6 +403,11 @@ async def on_message(message: cl.Message):
         extra_context=extra_ctx,
     )
 
+    # 获取用户设置
+    current_model = cl.user_session.get("current_model")
+    temperature = cl.user_session.get("temperature", 0.7)
+    max_tokens = cl.user_session.get("max_tokens", 4096)
+
     # 流式输出
     response_msg = cl.Message(content="")
     await response_msg.send()
@@ -375,6 +417,9 @@ async def on_message(message: cl.Message):
         messages=clean_history,
         system_prompt=system_prompt,
         provider=provider,
+        model=current_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
     ):
         full_response += token
         await response_msg.stream_token(token)
@@ -416,6 +461,11 @@ async def _auto_execute_code(
 
     # 获取上传的文件列表
     uploaded_files = cl.user_session.get("uploaded_files") or []
+
+    # 获取用户设置
+    current_model = cl.user_session.get("current_model")
+    temperature = cl.user_session.get("temperature", 0.7)
+    max_tokens = cl.user_session.get("max_tokens", 4096)
 
     for i, code in enumerate(code_blocks):
         retry_count = 0
@@ -493,6 +543,9 @@ async def _auto_execute_code(
                             messages=fix_messages,
                             system_prompt=system_prompt,
                             provider=provider,
+                            model=current_model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
                         )
 
                         # 提取修复后的代码
@@ -515,5 +568,26 @@ async def _auto_execute_code(
 @cl.on_settings_update
 async def on_settings_update(settings):
     """处理用户修改设置"""
-    # 预留：未来可在这里处理 API Key 等运行时设置
-    pass
+    # 更新模型选择
+    if "model" in settings:
+        cl.user_session.set("current_model", settings["model"])
+
+    # 更新温度
+    if "temperature" in settings:
+        cl.user_session.set("temperature", settings["temperature"])
+
+    # 更新最大 token 数
+    if "max_tokens" in settings:
+        cl.user_session.set("max_tokens", int(settings["max_tokens"]))
+
+    # 显示设置更新提示
+    model = settings.get("model", cl.user_session.get("current_model", "未知"))
+    temp = settings.get("temperature", cl.user_session.get("temperature", 0.7))
+    tokens = settings.get("max_tokens", cl.user_session.get("max_tokens", 4096))
+
+    await cl.Message(
+        content=f"⚙️ **设置已更新**\n"
+        f"- 模型: `{model}`\n"
+        f"- 温度: `{temp}`\n"
+        f"- 最大输出: `{int(tokens)}` tokens"
+    ).send()
