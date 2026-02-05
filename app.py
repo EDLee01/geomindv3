@@ -635,67 +635,65 @@ async def _auto_execute_code(
                             content=f"📦 **自动安装了以下依赖：** {', '.join(result['installed'])}"
                         ).send()
 
-                    # ── Artifacts 风格显示 ──
-                    artifacts = []
+                    # ── 显示执行结果 ──
+                    elements = []
 
-                    # 代码 Artifact（可下载）
+                    # 代码文件（可下载）
                     code_file = cl.File(
                         name="code.py",
                         content=current_code.encode("utf-8"),
-                        display="side",
+                        display="inline",
                     )
-                    artifacts.append(code_file)
+                    elements.append(code_file)
 
-                    # 输出结果 Artifact
+                    # 输出文件（可下载）
                     if result["output"]:
-                        output_text = cl.Text(
-                            name="📋 执行输出",
-                            content=result["output"],
-                            display="side",
-                        )
-                        artifacts.append(output_text)
-
-                        # 输出文件（可下载）
                         output_file = cl.File(
                             name="output.txt",
                             content=result["output"].encode("utf-8"),
-                            display="side",
+                            display="inline",
                         )
-                        artifacts.append(output_file)
+                        elements.append(output_file)
 
-                    # 图表 Artifacts（Canvas 风格）
+                    # 构建结果消息
+                    result_msg = "✅ **代码执行成功**\n\n"
+
+                    if result["output"]:
+                        output_preview = result["output"][:1000]
+                        if len(result["output"]) > 1000:
+                            output_preview += "\n... (输出已截断)"
+                        result_msg += f"```\n{output_preview}\n```\n\n"
+
+                    if result["images"]:
+                        result_msg += f"📊 生成了 {len(result['images'])} 张图表\n\n"
+
+                    result_msg += "📥 **下载**: 点击上方文件名下载代码和输出"
+
+                    await cl.Message(content=result_msg, elements=elements).send()
+
+                    # 单独显示每张图表（大图 + 下载）
                     for img in result["images"]:
                         img_bytes = base64.b64decode(img["data"])
 
-                        # 图片显示（侧边栏 Canvas 风格）
+                        # 图片元素
                         image_element = cl.Image(
                             name=img["filename"],
                             content=img_bytes,
-                            display="side",
+                            display="inline",
                             size="large",
                         )
-                        artifacts.append(image_element)
 
-                        # 图片下载
+                        # 图片文件（可下载）
                         img_file = cl.File(
                             name=img["filename"],
                             content=img_bytes,
-                            display="side",
+                            display="inline",
                         )
-                        artifacts.append(img_file)
 
-                    # 发送带 Artifacts 的消息
-                    artifact_msg = "✅ **代码执行成功**\n\n"
-                    if result["output"]:
-                        artifact_msg += f"```\n{result['output'][:500]}{'...' if len(result['output']) > 500 else ''}\n```\n\n"
-                    if result["images"]:
-                        artifact_msg += f"📊 生成了 {len(result['images'])} 张图表\n\n"
-                    artifact_msg += "💡 *点击右侧面板查看详情和下载*"
-
-                    await cl.Message(
-                        content=artifact_msg,
-                        elements=artifacts,
-                    ).send()
+                        await cl.Message(
+                            content=f"📊 **{img['filename']}**",
+                            elements=[image_element, img_file],
+                        ).send()
 
                     break  # 成功，退出重试循环
 
