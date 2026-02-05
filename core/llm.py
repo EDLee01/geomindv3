@@ -1,6 +1,6 @@
 """
 GeoMind Core - 多模型统一调用层
-支持 Claude (Anthropic) / Kimi (Moonshot) / DeepSeek
+支持 Claude / Kimi via Zeabur AI Hub
 """
 
 import httpx
@@ -13,50 +13,23 @@ from typing import List, Dict, AsyncIterator, Optional
 # ============================================================
 
 MODEL_PROVIDERS = {
-    "Claude": {
-        "env_key": "CLAUDE_API_KEY",
-        "base_url": "https://api.anthropic.com",
-        "models": ["claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"],
-        "default_model": "claude-sonnet-4-5-20250514",
-        "format": "anthropic",
-        "description": "Anthropic Claude · 最强推理能力",
-        "icon": "🟠",
-    },
     "Claude (Zeabur)": {
         "env_key": "CLAUDE_ZEABUR_API_KEY",
         "base_url": "https://hnd1.aihub.zeabur.ai/v1",
         "models": ["claude-sonnet-4-5"],
         "default_model": "claude-sonnet-4-5",
         "format": "openai",
-        "description": "Claude via Zeabur AI Hub（国内可用）",
+        "description": "Claude via Zeabur AI Hub",
         "icon": "🔵",
     },
     "Kimi (Zeabur)": {
         "env_key": "KIMI_ZEABUR_API_KEY",
         "base_url": "https://hnd1.aihub.zeabur.ai/v1",
-        "models": ["kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k"],
+        "models": ["kimi-k2.5"],
         "default_model": "kimi-k2.5",
         "format": "openai",
-        "description": "Kimi via Zeabur AI Hub（国内可用）",
+        "description": "Kimi via Zeabur AI Hub",
         "icon": "🟣",
-    },
-    "Kimi": {
-        "env_key": "KIMI_API_KEY",
-        "base_url": "https://api.moonshot.cn/v1",
-        "models": ["kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
-        "default_model": "kimi-k2.5",
-        "format": "openai",
-        "description": "Moonshot Kimi（需直连）",
-        "icon": "🟣",
-    },
-    "DeepSeek": {
-        "env_key": "DEEPSEEK_API_KEY",
-        "base_url": "https://api.deepseek.com/v1",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
-        "default_model": "deepseek-chat",
-        "format": "openai",
-        "description": "DeepSeek · 高性价比",
-        "icon": "🟢",
     },
 }
 
