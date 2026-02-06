@@ -34,6 +34,13 @@ default_expand_messages = true
 # 启用多模态（上传图片等）
 multi_modal = true
 
+# 启用自发文件上传（输入框旁显示上传按钮）
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["*/*"]
+max_files = 10
+max_size_mb = 50
+
 # 启用语音输入（需要浏览器支持）
 speech_to_text = false
 
