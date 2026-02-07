@@ -3,13 +3,12 @@ GeoMind Core - Chainlit 数据层
 实现对话历史持久化和恢复
 """
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from chainlit.data import BaseDataLayer
 from chainlit.types import ThreadDict, Pagination, PageInfo, PaginatedResponse
 from chainlit.user import User, PersistedUser
 from chainlit.element import ElementDict
 from chainlit.step import StepDict
-from literalai import Feedback
 import uuid
 from datetime import datetime
 
@@ -198,7 +197,7 @@ class GeoMindDataLayer(BaseDataLayer):
         """删除元素（暂不实现）"""
         pass
 
-    async def upsert_feedback(self, feedback: Feedback) -> str:
+    async def upsert_feedback(self, feedback: Any) -> str:
         """保存反馈（暂不实现）"""
         return str(uuid.uuid4())
 
