@@ -208,3 +208,11 @@ class GeoMindDataLayer(BaseDataLayer):
     async def build_debug_url(self) -> str:
         """调试 URL（暂不实现）"""
         return ""
+
+    async def close(self):
+        """关闭数据层连接"""
+        pass
+
+    async def get_favorite_steps(self, user_id: str) -> List[StepDict]:
+        """获取用户收藏的步骤（暂不实现）"""
+        return []
