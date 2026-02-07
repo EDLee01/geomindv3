@@ -11,6 +11,9 @@ from chainlit.element import ElementDict
 from chainlit.step import StepDict
 import uuid
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 from core.database import (
     get_user_by_id,
@@ -121,11 +124,13 @@ class GeoMindDataLayer(BaseDataLayer):
         filters: Dict,
     ) -> PaginatedResponse[ThreadDict]:
         """列出用户的对话历史"""
+        logger.info(f"list_threads called with filters: {filters}")
         user_id = filters.get("userId") or filters.get("user_id")
 
         # 如果没有 userId，尝试通过 userIdentifier 查找
         if not user_id:
             user_identifier = filters.get("userIdentifier")
+            logger.info(f"No userId, trying userIdentifier: {user_identifier}")
             if user_identifier:
                 conn = _get_connection()
                 cursor = conn.cursor()
@@ -137,8 +142,10 @@ class GeoMindDataLayer(BaseDataLayer):
                 conn.close()
                 if row:
                     user_id = row["id"]
+                    logger.info(f"Found user_id: {user_id}")
 
         if not user_id:
+            logger.warning("No user_id found, returning empty list")
             return PaginatedResponse(
                 data=[],
                 pageInfo=PageInfo(hasNextPage=False, endCursor=None),
@@ -146,6 +153,7 @@ class GeoMindDataLayer(BaseDataLayer):
 
         # 获取对话列表
         conversations = get_user_conversations(int(user_id), limit=50)
+        logger.info(f"Found {len(conversations)} conversations for user {user_id}")
 
         threads = []
         for conv in conversations:
