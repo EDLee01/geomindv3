@@ -122,6 +122,22 @@ class GeoMindDataLayer(BaseDataLayer):
     ) -> PaginatedResponse[ThreadDict]:
         """列出用户的对话历史"""
         user_id = filters.get("userId") or filters.get("user_id")
+
+        # 如果没有 userId，尝试通过 userIdentifier 查找
+        if not user_id:
+            user_identifier = filters.get("userIdentifier")
+            if user_identifier:
+                conn = _get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id FROM users WHERE username = ?",
+                    (user_identifier,)
+                )
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    user_id = row["id"]
+
         if not user_id:
             return PaginatedResponse(
                 data=[],
