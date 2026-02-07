@@ -320,16 +320,6 @@ async def on_chat_start():
         user_name = user.identifier
         user_email = user.metadata.get("email", "")
 
-        # 检查是否刚注册（只显示一次）
-        # 使用 session 变量防止切换 tab 时重复显示
-        already_welcomed = cl.user_session.get("registration_welcomed")
-        if user.metadata.get("just_registered") and not already_welcomed:
-            cl.user_session.set("registration_welcomed", True)
-            await cl.Message(
-                content=f"🎉 **注册成功！** 欢迎加入 GeoMind，{user_name}！\n\n"
-                f"你的邮箱: {user_email}"
-            ).send()
-
     # 创建新对话（如果用户已登录）
     conversation_id = None
     if user_id:
