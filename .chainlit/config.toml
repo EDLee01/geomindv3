@@ -50,5 +50,9 @@ latex = true
 # 不显示 "Powered by Chainlit"（需要付费版）
 # hide_cot = true
 
+# 启用对话历史（侧边栏显示历史对话列表）
+[features.chat_history]
+enabled = true
+
 [meta]
 generated_by = "GeoMind 4.0"

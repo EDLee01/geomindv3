@@ -40,6 +40,7 @@ from core.database import (
     get_conversation_messages,
     update_conversation_title,
 )
+from core.data_layer import GeoMindDataLayer
 
 # ============================================================
 # 全局配置
@@ -51,6 +52,9 @@ MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
 
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
+
+# 初始化数据层（启用对话历史）
+cl.data_layer = GeoMindDataLayer()
 
 
 # ============================================================
@@ -224,6 +228,60 @@ async def starters():
             icon="/public/write.svg",
         ),
     ]
+
+
+# ============================================================
+# 恢复历史对话
+# ============================================================
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: dict):
+    """恢复历史对话"""
+    thread_id = thread.get("id")
+    if not thread_id:
+        return
+
+    # 获取历史消息
+    messages = get_conversation_messages(int(thread_id))
+
+    # 恢复到 chat context
+    for msg in messages:
+        if msg["role"] == "user":
+            await cl.Message(
+                content=msg["content"],
+                author="user",
+                type="user_message",
+            ).send()
+        else:
+            await cl.Message(
+                content=msg["content"],
+                author="assistant",
+            ).send()
+
+    # 设置 session 变量
+    cl.user_session.set("conversation_id", int(thread_id))
+
+    # 获取用户信息
+    user = cl.user_session.get("user")
+    if user and user.metadata:
+        user_id = user.metadata.get("user_id")
+        cl.user_session.set("user_id", user_id)
+
+    # 初始化其他 session 变量
+    profile = cl.user_session.get("chat_profile")
+    if profile:
+        cl.user_session.set("provider", profile)
+        config = MODEL_PROVIDERS.get(profile, {})
+        cl.user_session.set("current_model", config.get("default_model", ""))
+
+    memory = ProjectMemory("default", name="恢复的对话")
+    cl.user_session.set("memory", memory)
+    cl.user_session.set("temperature", 0.7)
+    cl.user_session.set("max_tokens", 16384)
+
+    await cl.Message(
+        content=f"📂 **已恢复历史对话**\n\n继续我们之前的讨论吧！"
+    ).send()
 
 
 # ============================================================
