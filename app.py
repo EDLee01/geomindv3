@@ -59,7 +59,7 @@ skills_manager = SkillsManager(SKILLS_DIR)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'chainlit.db'}")
 
 @cl.data_layer
-async def get_data_layer():
+def get_data_layer():
     return SQLAlchemyDataLayer(conninfo=DATABASE_URL)
 
 
