@@ -57,7 +57,10 @@ skills_manager = SkillsManager(SKILLS_DIR)
 
 # 初始化数据层（使用 SQLAlchemy，支持侧边栏历史对话）
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'chainlit.db'}")
-cl.data_layer = SQLAlchemyDataLayer(conninfo=DATABASE_URL)
+
+@cl.data_layer
+async def get_data_layer():
+    return SQLAlchemyDataLayer(conninfo=DATABASE_URL)
 
 
 # ============================================================
