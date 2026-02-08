@@ -29,10 +29,12 @@ from core.literature import search_papers, format_papers_markdown, format_papers
 from core.code_runner import execute_python, extract_code_blocks, extract_markdown_blocks, format_execution_result, build_fix_prompt
 from core.skills import SkillsManager
 from core.memory import ProjectMemory
+import uuid as uuid_module
 from core.database import (
     create_user,
     authenticate_user,
     get_user_by_id,
+    get_user_by_identifier,
     user_exists,
     create_conversation,
     get_user_conversations,
@@ -40,6 +42,9 @@ from core.database import (
     get_conversation_messages,
     update_conversation_title,
     get_thread_steps,
+    create_thread as db_create_thread,
+    create_step as db_create_step,
+    update_thread as db_update_thread,
 )
 from core.data_layer import GeoMindDataLayer
 
@@ -329,20 +334,22 @@ async def on_chat_start():
         user_name = user.identifier
         user_email = user.metadata.get("email", "")
 
-    # 创建新对话（如果用户已登录）
-    conversation_id = None
+    # 创建新的 UUID 线程（用于侧边栏历史对话）
     if user_id:
+        thread_id = str(uuid_module.uuid4())
+        # 直接在数据库中创建线程
+        db_create_thread(
+            user_id=user_id,
+            user_identifier=user_name,
+            name=f"对话 - {user_name}",
+            thread_id=thread_id,
+        )
+        cl.user_session.set("thread_id", thread_id)
+        print(f"[APP] Created thread: {thread_id} for user: {user_id}")
+
+        # 同时创建旧版对话（向后兼容）
         conversation_id = create_conversation(user_id)
         cl.user_session.set("conversation_id", conversation_id)
-
-        # 获取历史对话列表
-        history_conversations = get_user_conversations(user_id, limit=5)
-        if history_conversations:
-            history_text = "\n".join([
-                f"- {c['title']} ({c['updated_at'][:10]})"
-                for c in history_conversations[:5]
-            ])
-            # 可以在侧边栏显示历史对话
 
     # 初始化 Memory
     memory = ProjectMemory("default", name="快速对话")
@@ -515,8 +522,23 @@ async def on_message(message: cl.Message):
     memory = cl.user_session.get("memory")
     user_text = message.content
     conversation_id = cl.user_session.get("conversation_id")
+    thread_id = cl.user_session.get("thread_id")
 
-    # 保存用户消息到数据库
+    # 保存用户消息到新的线程系统
+    if thread_id:
+        db_create_step(
+            thread_id=thread_id,
+            step_type="user_message",
+            name="user",
+            input_text=user_text,
+            output_text=user_text,
+        )
+        # 更新线程标题（第一条消息作为标题）
+        title = user_text[:50] + ("..." if len(user_text) > 50 else "")
+        db_update_thread(thread_id, name=title)
+        print(f"[APP] Saved user message to thread: {thread_id}")
+
+    # 保存用户消息到旧的数据库（向后兼容）
     if conversation_id:
         add_message(conversation_id, "user", user_text)
 
@@ -663,7 +685,17 @@ async def on_message(message: cl.Message):
 
     await response_msg.update()
 
-    # 保存 AI 回复到数据库
+    # 保存 AI 回复到新的线程系统
+    if thread_id and full_response:
+        db_create_step(
+            thread_id=thread_id,
+            step_type="assistant_message",
+            name="assistant",
+            output_text=full_response,
+        )
+        print(f"[APP] Saved assistant message to thread: {thread_id}")
+
+    # 保存 AI 回复到旧的数据库（向后兼容）
     if conversation_id and full_response:
         add_message(conversation_id, "assistant", full_response)
 
