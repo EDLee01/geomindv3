@@ -36,14 +36,21 @@ class GeoMindDataLayer(BaseDataLayer):
 
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
         """根据 identifier 获取用户"""
+        logger.info(f"[DATA_LAYER] get_user called: identifier={identifier}")
+        print(f"[DATA_LAYER] get_user called: identifier={identifier}")
+
         user = get_user_by_identifier(identifier)
         if user:
+            logger.info(f"[DATA_LAYER] User found: id={user['id']}, uuid={user['uuid']}, username={user['username']}")
+            print(f"[DATA_LAYER] User found: id={user['id']}, uuid={user['uuid']}, username={user['username']}")
             return PersistedUser(
                 id=user["uuid"],  # 使用 UUID 作为 Chainlit 的用户 ID
                 identifier=user["username"],
                 metadata={"email": user["email"], "db_id": user["id"]},
                 createdAt=user["created_at"],
             )
+        logger.warning(f"[DATA_LAYER] User not found: {identifier}")
+        print(f"[DATA_LAYER] User not found: {identifier}")
         return None
 
     async def create_user(self, user: User) -> Optional[PersistedUser]:
@@ -96,7 +103,8 @@ class GeoMindDataLayer(BaseDataLayer):
         tags: Optional[List[str]] = None,
     ) -> Optional[str]:
         """创建新对话"""
-        logger.info(f"create_thread: thread_id={thread_id}, name={name}, user_id={user_id}")
+        logger.info(f"[DATA_LAYER] create_thread called: thread_id={thread_id}, name={name}, user_id={user_id}")
+        print(f"[DATA_LAYER] create_thread called: thread_id={thread_id}, name={name}, user_id={user_id}")
 
         if not thread_id:
             thread_id = str(uuid.uuid4())
@@ -110,10 +118,15 @@ class GeoMindDataLayer(BaseDataLayer):
             cursor = conn.cursor()
             cursor.execute("SELECT id, username FROM users WHERE uuid = ?", (user_id,))
             row = cursor.fetchone()
-            conn.close()
             if row:
                 db_user_id = row["id"]
                 user_identifier = row["username"]
+                logger.info(f"[DATA_LAYER] Found user: db_id={db_user_id}, username={user_identifier}")
+                print(f"[DATA_LAYER] Found user: db_id={db_user_id}, username={user_identifier}")
+            else:
+                logger.warning(f"[DATA_LAYER] User not found by UUID: {user_id}")
+                print(f"[DATA_LAYER] User not found by UUID: {user_id}")
+            conn.close()
 
         if db_user_id:
             create_thread(
@@ -124,9 +137,13 @@ class GeoMindDataLayer(BaseDataLayer):
                 metadata=metadata,
                 tags=tags
             )
-            return thread_id
+            logger.info(f"[DATA_LAYER] Thread created: {thread_id}")
+            print(f"[DATA_LAYER] Thread created: {thread_id}")
+        else:
+            logger.warning(f"[DATA_LAYER] No db_user_id, thread NOT saved to database")
+            print(f"[DATA_LAYER] No db_user_id, thread NOT saved to database")
 
-        return thread_id  # 即使没有用户也返回 thread_id
+        return thread_id
 
     async def update_thread(
         self,
@@ -149,7 +166,8 @@ class GeoMindDataLayer(BaseDataLayer):
         filters,
     ) -> PaginatedResponse[ThreadDict]:
         """列出用户的对话历史"""
-        logger.info(f"list_threads called with filters: {filters}, type: {type(filters)}")
+        logger.info(f"[DATA_LAYER] list_threads called with filters: {filters}, type: {type(filters)}")
+        print(f"[DATA_LAYER] list_threads called with filters: {filters}, type: {type(filters)}")
 
         # 获取 userId（Chainlit 传入的是用户 UUID）
         user_uuid = None
@@ -158,7 +176,8 @@ class GeoMindDataLayer(BaseDataLayer):
         elif isinstance(filters, dict):
             user_uuid = filters.get("userId")
 
-        logger.info(f"Extracted user_uuid: {user_uuid}")
+        logger.info(f"[DATA_LAYER] Extracted user_uuid: {user_uuid}")
+        print(f"[DATA_LAYER] Extracted user_uuid: {user_uuid}")
 
         # 通过 UUID 获取数据库用户 ID
         db_user_id = None
