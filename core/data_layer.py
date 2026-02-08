@@ -1,6 +1,6 @@
 """
 GeoMind Core - Chainlit 数据层
-实现对话历史持久化和恢复
+实现对话历史持久化和恢复（使用 UUID 作为 thread_id）
 """
 
 from typing import Optional, List, Dict, Any
@@ -16,13 +16,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 from core.database import (
+    get_user_by_identifier,
     get_user_by_id,
-    create_conversation,
-    get_user_conversations,
-    get_conversation_messages,
-    add_message,
-    update_conversation_title,
-    delete_conversation,
+    create_thread,
+    get_thread,
+    get_user_threads,
+    update_thread,
+    delete_thread,
+    create_step,
+    get_thread_steps,
+    update_step,
+    delete_step,
     _get_connection,
 )
 
@@ -32,21 +36,13 @@ class GeoMindDataLayer(BaseDataLayer):
 
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
         """根据 identifier 获取用户"""
-        conn = _get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, username, email, created_at FROM users WHERE username = ?",
-            (identifier,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if row:
+        user = get_user_by_identifier(identifier)
+        if user:
             return PersistedUser(
-                id=str(row["id"]),
-                identifier=row["username"],
-                metadata={"email": row["email"]},
-                createdAt=row["created_at"],
+                id=user["uuid"],  # 使用 UUID 作为 Chainlit 的用户 ID
+                identifier=user["username"],
+                metadata={"email": user["email"], "db_id": user["id"]},
+                createdAt=user["created_at"],
             )
         return None
 
@@ -56,36 +52,39 @@ class GeoMindDataLayer(BaseDataLayer):
 
     async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
         """获取对话详情"""
-        conn = _get_connection()
-        cursor = conn.cursor()
-
-        # 获取对话信息
-        cursor.execute(
-            "SELECT id, user_id, title, created_at FROM conversations WHERE id = ?",
-            (int(thread_id),)
-        )
-        conv_row = cursor.fetchone()
-        if not conv_row:
-            conn.close()
+        thread = get_thread(thread_id)
+        if not thread:
             return None
 
-        # 获取用户信息
-        cursor.execute(
-            "SELECT username FROM users WHERE id = ?",
-            (conv_row["user_id"],)
-        )
-        user_row = cursor.fetchone()
-        conn.close()
+        # 获取线程的步骤
+        steps = get_thread_steps(thread_id)
+        step_dicts = []
+        for step in steps:
+            step_dicts.append(
+                StepDict(
+                    id=step["id"],
+                    threadId=thread_id,
+                    parentId=step["parent_id"],
+                    name=step["name"] or "",
+                    type=step["type"],
+                    input=step["input"] or "",
+                    output=step["output"] or "",
+                    metadata=step["metadata"],
+                    startTime=step["start_time"],
+                    endTime=step["end_time"],
+                    createdAt=step["created_at"],
+                )
+            )
 
         return ThreadDict(
-            id=str(conv_row["id"]),
-            name=conv_row["title"],
-            createdAt=conv_row["created_at"],
-            userId=str(conv_row["user_id"]),
-            userIdentifier=user_row["username"] if user_row else None,
-            metadata={},
-            steps=[],
-            tags=[],
+            id=thread["id"],
+            name=thread["name"],
+            createdAt=thread["created_at"],
+            userId=str(thread["user_id"]),
+            userIdentifier=thread["user_identifier"],
+            metadata=thread["metadata"],
+            steps=step_dicts,
+            tags=thread["tags"],
         )
 
     async def create_thread(
@@ -97,10 +96,37 @@ class GeoMindDataLayer(BaseDataLayer):
         tags: Optional[List[str]] = None,
     ) -> Optional[str]:
         """创建新对话"""
+        logger.info(f"create_thread: thread_id={thread_id}, name={name}, user_id={user_id}")
+
+        if not thread_id:
+            thread_id = str(uuid.uuid4())
+
+        # user_id 是 Chainlit 传入的（用户的 UUID），需要获取数据库中的整数 ID
+        db_user_id = None
+        user_identifier = None
         if user_id:
-            conv_id = create_conversation(int(user_id), name)
-            return str(conv_id)
-        return None
+            # 尝试通过 UUID 查找用户
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, username FROM users WHERE uuid = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                db_user_id = row["id"]
+                user_identifier = row["username"]
+
+        if db_user_id:
+            create_thread(
+                user_id=db_user_id,
+                user_identifier=user_identifier,
+                name=name,
+                thread_id=thread_id,
+                metadata=metadata,
+                tags=tags
+            )
+            return thread_id
+
+        return thread_id  # 即使没有用户也返回 thread_id
 
     async def update_thread(
         self,
@@ -111,12 +137,11 @@ class GeoMindDataLayer(BaseDataLayer):
         tags: Optional[List[str]] = None,
     ):
         """更新对话"""
-        if name:
-            update_conversation_title(int(thread_id), name)
+        update_thread(thread_id, name=name, metadata=metadata, tags=tags)
 
     async def delete_thread(self, thread_id: str):
         """删除对话"""
-        delete_conversation(int(thread_id))
+        delete_thread(thread_id)
 
     async def list_threads(
         self,
@@ -126,105 +151,113 @@ class GeoMindDataLayer(BaseDataLayer):
         """列出用户的对话历史"""
         logger.info(f"list_threads called with filters: {filters}, type: {type(filters)}")
 
-        # filters 可能是对象或字典，安全获取属性
+        # 获取 userId（Chainlit 传入的是用户 UUID）
+        user_uuid = None
         if hasattr(filters, 'userId'):
-            user_id = filters.userId
-        elif hasattr(filters, 'user_id'):
-            user_id = filters.user_id
+            user_uuid = filters.userId
         elif isinstance(filters, dict):
-            user_id = filters.get("userId") or filters.get("user_id")
-        else:
-            user_id = None
+            user_uuid = filters.get("userId")
 
-        logger.info(f"Extracted user_id: {user_id}")
+        logger.info(f"Extracted user_uuid: {user_uuid}")
 
-        # 如果没有 userId，尝试通过 userIdentifier 查找
-        if not user_id:
-            if hasattr(filters, 'userIdentifier'):
-                user_identifier = filters.userIdentifier
-            elif isinstance(filters, dict):
-                user_identifier = filters.get("userIdentifier")
-            else:
-                user_identifier = None
+        # 通过 UUID 获取数据库用户 ID
+        db_user_id = None
+        if user_uuid:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE uuid = ?", (user_uuid,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                db_user_id = row["id"]
+                logger.info(f"Found db_user_id: {db_user_id}")
 
-            logger.info(f"No userId, trying userIdentifier: {user_identifier}")
-            if user_identifier:
-                conn = _get_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT id FROM users WHERE username = ?",
-                    (user_identifier,)
-                )
-                row = cursor.fetchone()
-                conn.close()
-                if row:
-                    user_id = row["id"]
-                    logger.info(f"Found user_id from userIdentifier: {user_id}")
-
-        if not user_id:
-            logger.warning("No user_id found, returning empty list")
+        if not db_user_id:
+            logger.warning("No db_user_id found, returning empty list")
             return PaginatedResponse(
                 data=[],
-                pageInfo=PageInfo(hasNextPage=False, endCursor=None),
+                pageInfo=PageInfo(
+                    hasNextPage=False,
+                    startCursor=None,
+                    endCursor=None
+                ),
             )
 
-        # 获取对话列表
-        conversations = get_user_conversations(int(user_id), limit=50)
-        logger.info(f"Found {len(conversations)} conversations for user {user_id}")
+        # 获取线程列表
+        threads = get_user_threads(db_user_id, limit=50)
+        logger.info(f"Found {len(threads)} threads for user {db_user_id}")
 
-        threads = []
-        for conv in conversations:
-            threads.append(
+        thread_dicts = []
+        for thread in threads:
+            thread_dicts.append(
                 ThreadDict(
-                    id=str(conv["id"]),
-                    name=conv["title"],
-                    createdAt=conv["created_at"],
-                    userId=str(user_id),
-                    userIdentifier=None,
-                    metadata={},
+                    id=thread["id"],
+                    name=thread["name"],
+                    createdAt=thread["created_at"],
+                    userId=user_uuid,
+                    userIdentifier=thread["user_identifier"],
+                    metadata=thread["metadata"],
                     steps=[],
-                    tags=[],
+                    tags=thread["tags"],
                 )
             )
 
         return PaginatedResponse(
-            data=threads,
-            pageInfo=PageInfo(hasNextPage=False, endCursor=None),
+            data=thread_dicts,
+            pageInfo=PageInfo(
+                hasNextPage=False,
+                startCursor=None,
+                endCursor=None
+            ),
         )
 
     async def get_thread_author(self, thread_id: str) -> Optional[str]:
         """获取对话作者"""
-        conn = _get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT user_id FROM conversations WHERE id = ?",
-            (int(thread_id),)
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if row:
-            return str(row["user_id"])
+        thread = get_thread(thread_id)
+        if thread:
+            return thread["user_identifier"]
         return None
 
     async def create_step(self, step_dict: StepDict):
         """保存消息步骤"""
         thread_id = step_dict.get("threadId")
+        step_id = step_dict.get("id")
         step_type = step_dict.get("type")
-        output = step_dict.get("output", "")
+        name = step_dict.get("name")
+        input_text = step_dict.get("input")
+        output_text = step_dict.get("output")
+        parent_id = step_dict.get("parentId")
+        metadata = step_dict.get("metadata", {})
+        start_time = step_dict.get("startTime")
+        end_time = step_dict.get("endTime")
 
-        if thread_id and step_type in ("user_message", "assistant_message"):
-            role = "user" if step_type == "user_message" else "assistant"
-            if output:
-                add_message(int(thread_id), role, output)
+        if thread_id:
+            create_step(
+                thread_id=thread_id,
+                step_type=step_type,
+                name=name,
+                step_id=step_id,
+                parent_id=parent_id,
+                input_text=input_text,
+                output_text=output_text,
+                metadata=metadata,
+                start_time=start_time,
+                end_time=end_time
+            )
 
     async def update_step(self, step_dict: StepDict):
-        """更新步骤（暂不实现）"""
-        pass
+        """更新步骤"""
+        step_id = step_dict.get("id")
+        output_text = step_dict.get("output")
+        end_time = step_dict.get("endTime")
+        metadata = step_dict.get("metadata")
+
+        if step_id:
+            update_step(step_id, output_text=output_text, end_time=end_time, metadata=metadata)
 
     async def delete_step(self, step_id: str):
-        """删除步骤（暂不实现）"""
-        pass
+        """删除步骤"""
+        delete_step(step_id)
 
     async def get_element(self, thread_id: str, element_id: str) -> Optional[ElementDict]:
         """获取元素（暂不实现）"""

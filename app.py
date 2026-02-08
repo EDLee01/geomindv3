@@ -39,7 +39,9 @@ from core.database import (
     add_message,
     get_conversation_messages,
     update_conversation_title,
+    get_thread_steps,
 )
+from core.data_layer import GeoMindDataLayer
 
 # ============================================================
 # 全局配置
@@ -52,9 +54,10 @@ MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
 
-# 注意：侧边栏历史对话功能暂时禁用
-# Chainlit 要求使用 UUID 作为 thread_id，与当前数据库结构不兼容
-# 需要重构数据库才能支持
+# 注册 Chainlit 数据层（用于侧边栏历史对话）
+@cl.data_layer
+def get_data_layer():
+    return GeoMindDataLayer()
 
 
 # ============================================================
@@ -236,30 +239,36 @@ async def starters():
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict):
-    """恢复历史对话"""
+    """恢复历史对话（使用 UUID 格式的 thread_id）"""
     thread_id = thread.get("id")
     if not thread_id:
         return
 
-    # 获取历史消息
-    messages = get_conversation_messages(int(thread_id))
+    # 获取历史步骤（使用新的 UUID-based 数据结构）
+    steps = get_thread_steps(thread_id)
 
     # 恢复到 chat context
-    for msg in messages:
-        if msg["role"] == "user":
+    for step in steps:
+        step_type = step.get("type", "")
+        output = step.get("output", "")
+        input_text = step.get("input", "")
+
+        # 用户消息
+        if step_type == "user_message":
             await cl.Message(
-                content=msg["content"],
+                content=input_text or output,
                 author="user",
                 type="user_message",
             ).send()
-        else:
+        # AI 回复
+        elif step_type == "assistant_message" and output:
             await cl.Message(
-                content=msg["content"],
+                content=output,
                 author="assistant",
             ).send()
 
-    # 设置 session 变量
-    cl.user_session.set("conversation_id", int(thread_id))
+    # 设置 session 变量（现在使用 UUID 字符串）
+    cl.user_session.set("thread_id", thread_id)
 
     # 获取用户信息
     user = cl.user_session.get("user")
