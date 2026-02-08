@@ -329,12 +329,20 @@ async def on_chat_start():
     user_name = "访客"
     user_email = ""
 
-    if user and user.metadata:
-        user_id = user.metadata.get("user_id")
-        user_name = user.identifier
-        user_email = user.metadata.get("email", "")
+    print(f"[APP] on_chat_start - user object: {user}")
+    print(f"[APP] on_chat_start - user type: {type(user)}")
+
+    if user:
+        print(f"[APP] on_chat_start - user.identifier: {user.identifier}")
+        print(f"[APP] on_chat_start - user.metadata: {user.metadata}")
+        if user.metadata:
+            user_id = user.metadata.get("user_id")
+            user_name = user.identifier
+            user_email = user.metadata.get("email", "")
+            print(f"[APP] on_chat_start - extracted user_id: {user_id}")
 
     # 创建新的 UUID 线程（用于侧边栏历史对话）
+    print(f"[APP] on_chat_start - about to create thread, user_id={user_id}")
     if user_id:
         thread_id = str(uuid_module.uuid4())
         # 直接在数据库中创建线程
