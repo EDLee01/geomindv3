@@ -278,7 +278,7 @@ async def on_chat_resume(thread: dict):
     # 获取用户信息
     user = cl.user_session.get("user")
     if user and user.metadata:
-        user_id = user.metadata.get("user_id")
+        user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
         cl.user_session.set("user_id", user_id)
 
     # 初始化其他 session 变量
@@ -336,7 +336,8 @@ async def on_chat_start():
         print(f"[APP] on_chat_start - user.identifier: {user.identifier}")
         print(f"[APP] on_chat_start - user.metadata: {user.metadata}")
         if user.metadata:
-            user_id = user.metadata.get("user_id")
+            # 注意：PersistedUser 的 metadata 中使用 db_id 而不是 user_id
+            user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
             user_name = user.identifier
             user_email = user.metadata.get("email", "")
             print(f"[APP] on_chat_start - extracted user_id: {user_id}")
