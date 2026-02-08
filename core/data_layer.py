@@ -121,15 +121,32 @@ class GeoMindDataLayer(BaseDataLayer):
     async def list_threads(
         self,
         pagination: Pagination,
-        filters: Dict,
+        filters,
     ) -> PaginatedResponse[ThreadDict]:
         """列出用户的对话历史"""
-        logger.info(f"list_threads called with filters: {filters}")
-        user_id = filters.get("userId") or filters.get("user_id")
+        logger.info(f"list_threads called with filters: {filters}, type: {type(filters)}")
+
+        # filters 可能是对象或字典，安全获取属性
+        if hasattr(filters, 'userId'):
+            user_id = filters.userId
+        elif hasattr(filters, 'user_id'):
+            user_id = filters.user_id
+        elif isinstance(filters, dict):
+            user_id = filters.get("userId") or filters.get("user_id")
+        else:
+            user_id = None
+
+        logger.info(f"Extracted user_id: {user_id}")
 
         # 如果没有 userId，尝试通过 userIdentifier 查找
         if not user_id:
-            user_identifier = filters.get("userIdentifier")
+            if hasattr(filters, 'userIdentifier'):
+                user_identifier = filters.userIdentifier
+            elif isinstance(filters, dict):
+                user_identifier = filters.get("userIdentifier")
+            else:
+                user_identifier = None
+
             logger.info(f"No userId, trying userIdentifier: {user_identifier}")
             if user_identifier:
                 conn = _get_connection()
@@ -142,7 +159,7 @@ class GeoMindDataLayer(BaseDataLayer):
                 conn.close()
                 if row:
                     user_id = row["id"]
-                    logger.info(f"Found user_id: {user_id}")
+                    logger.info(f"Found user_id from userIdentifier: {user_id}")
 
         if not user_id:
             logger.warning("No user_id found, returning empty list")

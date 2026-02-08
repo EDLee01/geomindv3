@@ -41,8 +41,8 @@ from core.database import (
     update_conversation_title,
 )
 
-# 使用 Chainlit 官方 SQLAlchemy 数据层
-from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+# 使用自定义数据层
+from core.data_layer import GeoMindDataLayer
 
 # ============================================================
 # 全局配置
@@ -55,12 +55,10 @@ MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
 
-# 初始化数据层（使用 SQLAlchemy，支持侧边栏历史对话）
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'chainlit.db'}")
-
+# 初始化数据层
 @cl.data_layer
 def get_data_layer():
-    return SQLAlchemyDataLayer(conninfo=DATABASE_URL)
+    return GeoMindDataLayer()
 
 
 # ============================================================
