@@ -41,9 +41,6 @@ from core.database import (
     update_conversation_title,
 )
 
-# 使用自定义数据层
-from core.data_layer import GeoMindDataLayer
-
 # ============================================================
 # 全局配置
 # ============================================================
@@ -55,10 +52,9 @@ MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
 
-# 初始化数据层
-@cl.data_layer
-def get_data_layer():
-    return GeoMindDataLayer()
+# 注意：侧边栏历史对话功能暂时禁用
+# Chainlit 要求使用 UUID 作为 thread_id，与当前数据库结构不兼容
+# 需要重构数据库才能支持
 
 
 # ============================================================
