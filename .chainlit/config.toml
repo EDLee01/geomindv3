@@ -21,8 +21,8 @@ default_expand_messages = true
 # 显示 GitHub 链接（可选）
 # github = "https://github.com/your-repo"
 
-# 自定义 CSS（可选）
-# custom_css = "/public/custom.css"
+# 自定义 CSS
+custom_css = "/public/custom.css"
 
 # 自定义 JS（可选）
 # custom_js = "/public/custom.js"
@@ -33,6 +33,9 @@ default_expand_messages = true
 [features]
 # 启用多模态（上传图片等）
 multi_modal = true
+
+# 禁用新对话确认弹窗（直接开始新对话）
+unsafe_allow_html = true
 
 # 启用自发文件上传（输入框旁显示上传按钮）
 [features.spontaneous_file_upload]

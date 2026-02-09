@@ -383,6 +383,33 @@ async def on_chat_resume(thread: dict):
 # Chat 启动
 # ============================================================
 
+@cl.set_starters
+async def set_starters():
+    """设置快捷启动按钮（类似 Claude 的欢迎页面）"""
+    return [
+        cl.Starter(
+            label="📚 文献检索",
+            message="帮我检索关于 [主题] 的最新研究论文",
+            icon="/public/icons/search.svg",
+        ),
+        cl.Starter(
+            label="📊 数据分析",
+            message="帮我分析这个数据集的统计特征和相关性",
+            icon="/public/icons/chart.svg",
+        ),
+        cl.Starter(
+            label="💻 代码执行",
+            message="用 Python 帮我 [描述任务]",
+            icon="/public/icons/code.svg",
+        ),
+        cl.Starter(
+            label="✍️ 论文写作",
+            message="帮我撰写关于 [主题] 的研究综述",
+            icon="/public/icons/write.svg",
+        ),
+    ]
+
+
 @cl.on_chat_start
 async def on_chat_start():
     """对话启动时初始化"""
@@ -496,27 +523,8 @@ async def on_chat_start():
         ]
     ).send()
 
-    # 欢迎消息
-    welcome_msg = f"👋 你好"
-    if user_id:
-        welcome_msg += f"，**{user_name}**"
-    welcome_msg += f"！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
-    welcome_msg += f"当前模型: **{profile}** (`{default_model}`)\n\n"
-    welcome_msg += f"我可以帮你：\n"
-    welcome_msg += f"- 🔍 检索 70 万+ 验证论文\n"
-    welcome_msg += f"- 📊 分析数据、执行代码\n"
-    welcome_msg += f"- 📈 生成学术级图表\n"
-    welcome_msg += f"- ✍️ 辅助论文写作\n\n"
-
-    if user_id:
-        welcome_msg += f"💾 对话将自动保存到你的账户\n\n"
-    else:
-        welcome_msg += f"💡 **提示**: 登录后可以保存对话历史\n\n"
-
-    welcome_msg += f"⚙️ 点击输入框旁的齿轮图标可以切换模型\n\n"
-    welcome_msg += f"直接告诉我你的需求吧！"
-
-    await cl.Message(content=welcome_msg).send()
+    # 不发送欢迎消息，让界面保持简洁
+    # 用户会看到 starters（快捷按钮）和输入框
 
 
 # ============================================================

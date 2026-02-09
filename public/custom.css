@@ -1,0 +1,67 @@
+/* GeoMind 自定义样式 - 类似 Claude 的简洁界面 */
+
+/* 欢迎页面标题居中 */
+.cl-welcome-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+
+/* Starters 按钮样式优化 */
+.cl-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.cl-starter {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.cl-starter:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+}
+
+/* 输入框样式优化 */
+.cl-input-container {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+/* 隐藏新对话确认弹窗的标题（让它更简洁） */
+.MuiDialog-paper {
+  border-radius: 16px !important;
+}
+
+/* 聊天消息区域 */
+.cl-message-list {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* 代码块样式 */
+pre {
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+/* 侧边栏历史对话样式 */
+.cl-history-item {
+  border-radius: 8px;
+  margin: 4px 8px;
+}
+
+.cl-history-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
