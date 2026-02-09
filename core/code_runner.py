@@ -98,29 +98,49 @@ import os
 from pathlib import Path
 from matplotlib import font_manager
 
+# 清除 matplotlib 字体缓存（确保新字体被识别）
+_cache_dir = Path.home() / '.cache' / 'matplotlib'
+if _cache_dir.exists():
+    for _cache_file in _cache_dir.glob('*.json'):
+        try:
+            _cache_file.unlink()
+        except:
+            pass
+
 # 尝试加载项目中的 SimHei 字体
 _font_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
 _possible_font_paths = [
-    Path('/home/user/geomindv3/fonts/SimHei.ttf'),
+    Path('/opt/geomind/fonts/SimHei.ttf'),  # 服务器生产环境
+    Path('/home/user/geomindv3/fonts/SimHei.ttf'),  # 本地开发环境
     Path('/root/geomindv3/fonts/SimHei.ttf'),
     _font_dir / 'fonts' / 'SimHei.ttf',
     _font_dir.parent / 'fonts' / 'SimHei.ttf',
 ]
 
 _font_loaded = False
+_loaded_font_path = None
 for _font_path in _possible_font_paths:
     if _font_path.exists():
         try:
+            # 注册字体
             font_manager.fontManager.addfont(str(_font_path))
-            plt.rcParams['font.sans-serif'] = ['SimHei'] + plt.rcParams['font.sans-serif']
+            # 获取字体属性以确认字体名称
+            _font_prop = font_manager.FontProperties(fname=str(_font_path))
+            _font_name = _font_prop.get_name()
+            # 使用实际的字体名称
+            plt.rcParams['font.sans-serif'] = [_font_name] + plt.rcParams['font.sans-serif']
+            plt.rcParams['font.family'] = 'sans-serif'
             _font_loaded = True
+            _loaded_font_path = str(_font_path)
+            print(f"[字体] 成功加载: {_font_name} from {_font_path}")
             break
-        except:
-            pass
+        except Exception as _e:
+            print(f"[字体] 加载失败 {_font_path}: {_e}")
 
 if not _font_loaded:
     # 回退到系统字体
     plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+    print("[字体] 未找到中文字体，使用默认字体")
 
 plt.rcParams['axes.unicode_minus'] = False
 """
