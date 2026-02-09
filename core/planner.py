@@ -145,6 +145,12 @@ def get_planning_prompt(user_request: str, detected_tools: List[Tool]) -> str:
 ### 所有可用功能：
 {all_tools_desc}
 
+### ⚠️ 重要规则：
+1. **只生成执行方案，不要执行任何操作**
+2. **绝对禁止编造或提供任何文献/论文信息**（包括标题、作者、DOI、年份）
+3. **文献检索将在用户确认后由系统自动执行**
+4. **方案中只描述"将要做什么"，不要给出具体内容或结果**
+
 ### 请按以下格式生成执行方案：
 
 ---
@@ -156,9 +162,8 @@ def get_planning_prompt(user_request: str, detected_tools: List[Tool]) -> str:
 
 | 步骤 | 功能 | 具体操作 | 预期结果 |
 |:----:|:----:|:---------|:---------|
-| 1 | [功能名] | [具体操作描述] | [预期输出] |
-| 2 | [功能名] | [具体操作描述] | [预期输出] |
-| ... | ... | ... | ... |
+| 1 | [功能名] | [具体操作描述] | [预期输出类型，不是具体内容] |
+| 2 | [功能名] | [具体操作描述] | [预期输出类型，不是具体内容] |
 
 **需要您确认**：
 - [ ] 方案是否符合您的需求？
@@ -168,7 +173,7 @@ def get_planning_prompt(user_request: str, detected_tools: List[Tool]) -> str:
 
 ---
 
-请根据用户需求生成上述格式的方案。如果需求简单（如简单问答），可以直接回答而不需要方案。
+请根据用户需求生成上述格式的方案。只描述步骤，不要提前给出任何结果或内容。
 """
 
 
@@ -270,6 +275,15 @@ def should_use_planning_mode(text: str) -> bool:
     # 检测到的工具数量
     tools = detect_tools_from_text(text)
 
+    # 如果只有文献检索且没有其他复杂需求，直接执行而不进入规划模式
+    # 这样可以避免 LLM 在规划阶段瞎编文献
+    if len(tools) == 1 and tools[0].type == ToolType.LITERATURE_SEARCH:
+        # 只有同时需要其他操作时才进入规划模式
+        other_complex_keywords = ["然后", "之后", "接着", "并且", "同时", "再",
+                                   "分析", "可视化", "画图", "写", "撰写"]
+        if not any(kw in text for kw in other_complex_keywords):
+            return False  # 简单文献检索，不需要规划
+
     # 如果检测到多个工具，或者是复杂任务关键词，使用规划模式
     complex_keywords = [
         "帮我", "请帮", "我想", "我要", "能不能", "可以",
@@ -281,14 +295,17 @@ def should_use_planning_mode(text: str) -> bool:
 
     # 规则：
     # 1. 检测到 2+ 工具 → 规划模式
-    # 2. 检测到 1 个工具 + 复杂关键词 → 规划模式
-    # 3. 文本较长（>50字）+ 工具 → 规划模式
+    # 2. 检测到 1 个工具 + 复杂关键词 + 不是简单文献检索 → 规划模式
+    # 3. 文本较长（>80字）+ 2个以上工具 → 规划模式
 
     if len(tools) >= 2:
         return True
     if len(tools) == 1 and has_complex_keyword:
+        # 额外检查：只有文献检索时，需要更强的复杂性指标
+        if tools[0].type == ToolType.LITERATURE_SEARCH:
+            return len(text) > 80  # 文献检索需要更长的文本才触发规划
         return True
-    if len(text) > 50 and len(tools) >= 1:
+    if len(text) > 80 and len(tools) >= 2:
         return True
 
     return False
