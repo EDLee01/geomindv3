@@ -245,53 +245,66 @@ async def starters():
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict):
     """恢复历史对话（使用 UUID 格式的 thread_id）"""
-    thread_id = thread.get("id")
-    if not thread_id:
-        return
+    try:
+        print(f"[APP] on_chat_resume called with thread: {thread}")
+        thread_id = thread.get("id")
+        if not thread_id:
+            print("[APP] on_chat_resume: No thread_id found")
+            return
 
-    # 获取历史步骤（使用新的 UUID-based 数据结构）
-    steps = get_thread_steps(thread_id)
+        print(f"[APP] on_chat_resume: Loading steps for thread_id={thread_id}")
+        # 获取历史步骤（使用新的 UUID-based 数据结构）
+        steps = get_thread_steps(thread_id)
+        print(f"[APP] on_chat_resume: Found {len(steps)} steps")
 
-    # 恢复到 chat context
-    for step in steps:
-        step_type = step.get("type", "")
-        output = step.get("output", "")
-        input_text = step.get("input", "")
+        # 恢复到 chat context
+        for i, step in enumerate(steps):
+            step_type = step.get("type", "")
+            output = step.get("output", "")
+            input_text = step.get("input", "")
+            print(f"[APP] on_chat_resume: Step {i}: type={step_type}")
 
-        # 用户消息
-        if step_type == "user_message":
-            await cl.Message(
-                content=input_text or output,
-                author="user",
-                type="user_message",
-            ).send()
-        # AI 回复
-        elif step_type == "assistant_message" and output:
-            await cl.Message(
-                content=output,
-                author="assistant",
-            ).send()
+            # 用户消息
+            if step_type == "user_message":
+                await cl.Message(
+                    content=input_text or output,
+                    author="user",
+                    type="user_message",
+                ).send()
+            # AI 回复
+            elif step_type == "assistant_message" and output:
+                await cl.Message(
+                    content=output,
+                    author="assistant",
+                ).send()
 
-    # 设置 session 变量（现在使用 UUID 字符串）
-    cl.user_session.set("thread_id", thread_id)
+        # 设置 session 变量（现在使用 UUID 字符串）
+        cl.user_session.set("thread_id", thread_id)
 
-    # 获取用户信息
-    user = cl.user_session.get("user")
-    if user and user.metadata:
-        user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
-        cl.user_session.set("user_id", user_id)
+        # 获取用户信息
+        user = cl.user_session.get("user")
+        if user and user.metadata:
+            user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
+            cl.user_session.set("user_id", user_id)
 
-    # 初始化其他 session 变量
-    profile = cl.user_session.get("chat_profile")
-    if profile:
-        cl.user_session.set("provider", profile)
-        config = MODEL_PROVIDERS.get(profile, {})
-        cl.user_session.set("current_model", config.get("default_model", ""))
+        # 初始化其他 session 变量
+        profile = cl.user_session.get("chat_profile")
+        if profile:
+            cl.user_session.set("provider", profile)
+            config = MODEL_PROVIDERS.get(profile, {})
+            cl.user_session.set("current_model", config.get("default_model", ""))
 
-    memory = ProjectMemory("default", name="恢复的对话")
-    cl.user_session.set("memory", memory)
-    cl.user_session.set("temperature", 0.7)
-    cl.user_session.set("max_tokens", 16384)
+        memory = ProjectMemory("default", name="恢复的对话")
+        cl.user_session.set("memory", memory)
+        cl.user_session.set("temperature", 0.7)
+        cl.user_session.set("max_tokens", 16384)
+
+        print(f"[APP] on_chat_resume: Successfully resumed thread {thread_id}")
+
+    except Exception as e:
+        print(f"[APP] on_chat_resume ERROR: {e}")
+        import traceback
+        traceback.print_exc()
 
     await cl.Message(
         content=f"📂 **已恢复历史对话**\n\n继续我们之前的讨论吧！"
