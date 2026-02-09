@@ -47,6 +47,15 @@ from core.database import (
     update_thread as db_update_thread,
 )
 from core.data_layer import GeoMindDataLayer
+from core.planner import (
+    detect_tools_from_text,
+    get_planning_prompt,
+    should_use_planning_mode,
+    is_confirmation_message,
+    is_modification_message,
+    is_cancel_message,
+    AVAILABLE_TOOLS,
+)
 
 # ============================================================
 # 全局配置
@@ -636,6 +645,99 @@ async def on_message(message: cl.Message):
         files = [e for e in message.elements if isinstance(e, cl.File)]
         if files:
             file_context = await handle_uploaded_files(files)
+
+    # ── 智能方案系统：检查是否在等待确认 ──
+    pending_plan = cl.user_session.get("pending_plan")
+
+    if pending_plan:
+        # 用户之前收到了方案，检查他们的回复
+        if is_confirmation_message(user_text):
+            # 用户确认执行
+            cl.user_session.set("pending_plan", None)
+            cl.user_session.set("plan_confirmed", True)
+            await cl.Message(content="✅ **方案已确认，开始执行...**").send()
+            # 继续执行下面的逻辑，使用原始请求
+            user_text = pending_plan  # 恢复原始请求
+
+        elif is_cancel_message(user_text):
+            # 用户取消
+            cl.user_session.set("pending_plan", None)
+            await cl.Message(content="❌ **已取消方案执行**\n\n请告诉我您的新需求。").send()
+            return
+
+        elif is_modification_message(user_text):
+            # 用户要修改方案
+            modification = user_text
+            cl.user_session.set("pending_plan", None)
+            await cl.Message(
+                content=f"📝 **收到修改请求**\n\n正在根据您的要求调整方案..."
+            ).send()
+            # 将修改请求与原始请求合并
+            user_text = f"{pending_plan}\n\n用户要求修改：{modification}"
+
+        else:
+            # 视为新的请求，清除旧方案
+            cl.user_session.set("pending_plan", None)
+
+    # ── 智能方案系统：判断是否需要规划模式 ──
+    plan_confirmed = cl.user_session.get("plan_confirmed")
+
+    if not plan_confirmed and should_use_planning_mode(user_text):
+        # 检测需要的工具
+        detected_tools = detect_tools_from_text(user_text)
+
+        if detected_tools:
+            # 显示检测到的功能
+            tools_list = ", ".join([f"{t.icon} {t.name}" for t in detected_tools])
+
+            async with cl.Step(name="🎯 智能分析", type="tool") as step:
+                step.output = f"检测到需要的功能: {tools_list}"
+
+            # 保存原始请求，用于后续确认执行
+            cl.user_session.set("pending_plan", user_text)
+
+            # 生成规划提示
+            planning_prompt = get_planning_prompt(user_text, detected_tools)
+
+            # 调用 LLM 生成方案
+            provider = cl.user_session.get("provider")
+            current_model = cl.user_session.get("current_model")
+            temperature = cl.user_session.get("temperature", 0.7)
+            max_tokens = cl.user_session.get("max_tokens", 4096)
+
+            response_msg = cl.Message(content="")
+            await response_msg.send()
+
+            full_response = ""
+            async for token in stream_llm(
+                messages=[{"role": "user", "content": planning_prompt}],
+                system_prompt=build_system_prompt(memory=memory),
+                provider=provider,
+                model=current_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                full_response += token
+                await response_msg.stream_token(token)
+
+            await response_msg.update()
+
+            # 保存方案到数据库
+            if thread_id and full_response:
+                db_create_step(
+                    thread_id=thread_id,
+                    step_type="assistant_message",
+                    name="assistant",
+                    output_text=full_response,
+                )
+
+            if conversation_id and full_response:
+                add_message(conversation_id, "assistant", full_response)
+
+            return  # 等待用户确认
+
+    # 清除确认状态
+    cl.user_session.set("plan_confirmed", False)
 
     # ── Step 1: 意图识别 & Skill 匹配 ──
     matched_skill = skills_manager.match_skill(user_text)
