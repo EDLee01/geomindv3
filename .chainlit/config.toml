@@ -24,8 +24,8 @@ default_expand_messages = true
 # 自定义 CSS
 custom_css = "/public/custom.css"
 
-# 自定义 JS（可选）
-# custom_js = "/public/custom.js"
+# 自定义 JS（修复弹窗文字）
+custom_js = "/public/custom.js"
 
 # 自定义 favicon
 # custom_favicon = "/public/favicon.ico"
