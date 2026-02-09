@@ -93,11 +93,35 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
-# 中文字体尝试
-try:
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'WenQuanYi Micro Hei', 'DejaVu Sans']
-except:
-    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+# 中文字体配置 - 加载自定义字体文件
+import os
+from pathlib import Path
+from matplotlib import font_manager
+
+# 尝试加载项目中的 SimHei 字体
+_font_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
+_possible_font_paths = [
+    Path('/home/user/geomindv3/fonts/SimHei.ttf'),
+    Path('/root/geomindv3/fonts/SimHei.ttf'),
+    _font_dir / 'fonts' / 'SimHei.ttf',
+    _font_dir.parent / 'fonts' / 'SimHei.ttf',
+]
+
+_font_loaded = False
+for _font_path in _possible_font_paths:
+    if _font_path.exists():
+        try:
+            font_manager.fontManager.addfont(str(_font_path))
+            plt.rcParams['font.sans-serif'] = ['SimHei'] + plt.rcParams['font.sans-serif']
+            _font_loaded = True
+            break
+        except:
+            pass
+
+if not _font_loaded:
+    # 回退到系统字体
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+
 plt.rcParams['axes.unicode_minus'] = False
 """
 
