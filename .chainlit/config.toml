@@ -1,0 +1,14 @@
+[project]
+enable_telemetry = false
+
+[features]
+prompt_playground = true
+multi_modal = true
+
+[UI]
+name = "GeoMind 4.0"
+description = "Earth Science AI Research Assistant"
+default_theme = "dark"
+show_readme_as_default = true
+github = ""
+custom_css = "/public/custom.css"

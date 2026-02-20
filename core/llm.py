@@ -40,6 +40,15 @@ MODEL_PROVIDERS = {
         "description": "Moonshot Kimi · 128K 超长上下文",
         "icon": "🟣",
     },
+    "Kimi (Zeabur)": {
+        "env_key": "KIMI_ZEABUR_API_KEY",
+        "base_url": "https://hnd1.aihub.zeabur.ai/v1",
+        "models": ["kimi"],
+        "default_model": "kimi",
+        "format": "openai",
+        "description": "Kimi via Zeabur AI Hub（国内可用）",
+        "icon": "🟣",
+    },
     "DeepSeek": {
         "env_key": "DEEPSEEK_API_KEY",
         "base_url": "https://api.deepseek.com/v1",

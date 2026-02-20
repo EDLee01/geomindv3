@@ -1,0 +1,12 @@
+{
+  "admin": {
+    "password": "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918",
+    "role": "admin",
+    "name": "管理员"
+  },
+  "researcher": {
+    "password": "5e884898da28047d9917fb7aa7e5e4c0d6d6b8cd1c88a7a2b7b7e7c8f8e9d9e0",
+    "role": "user",
+    "name": "研究员"
+  }
+}

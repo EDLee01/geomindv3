@@ -8,12 +8,17 @@ Features:
 - 代码自动执行 + 失败重试
 - Skills 系统（.md 知识库）
 - 流式输出
+- 用户登录认证
+- Canvas 侧边栏（代码/图片下载，支持 md/png/pdf）
 """
 
 import chainlit as cl
+from chainlit.types import ThreadDict
 import os
 import re
 import base64
+import json
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -27,6 +32,7 @@ from core.literature import search_papers, format_papers_markdown, format_papers
 from core.code_runner import execute_python, extract_code_blocks, format_execution_result, build_fix_prompt
 from core.skills import SkillsManager
 from core.memory import ProjectMemory
+from core.canvas import CanvasManager, extract_canvas_content
 
 # ============================================================
 # 全局配置
@@ -35,9 +41,117 @@ from core.memory import ProjectMemory
 BASE_DIR = Path(__file__).parent
 SKILLS_DIR = BASE_DIR / "skills"
 MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
+USERS_FILE = BASE_DIR / "users.json"  # 用户数据文件
 
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
+
+
+# ============================================================
+# 用户认证系统（可选，需设置 CHAINLIT_AUTH_SECRET 环境变量）
+# ============================================================
+
+# 检查是否启用认证
+AUTH_ENABLED = bool(os.getenv("CHAINLIT_AUTH_SECRET", ""))
+
+def _hash_password(password: str) -> str:
+    """对密码进行哈希处理"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _load_users() -> Dict:
+    """加载用户数据"""
+    # 优先从环境变量读取用户配置（Zeabur 部署）
+    env_users = os.getenv("GEOMIND_USERS", "")
+    if env_users:
+        try:
+            return json.loads(env_users)
+        except json.JSONDecodeError:
+            pass
+
+    # 从文件读取
+    if USERS_FILE.exists():
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # 默认用户（如果配置了环境变量）
+    default_user = os.getenv("GEOMIND_DEFAULT_USER", "")
+    default_pass = os.getenv("GEOMIND_DEFAULT_PASSWORD", "")
+
+    if default_user and default_pass:
+        return {
+            default_user: {
+                "password": _hash_password(default_pass),
+                "role": "admin",
+                "name": default_user
+            }
+        }
+
+    return {}
+
+
+def _save_users(users: Dict):
+    """保存用户数据到文件"""
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, indent=2, ensure_ascii=False)
+
+
+def _verify_user(username: str, password: str) -> Optional[Dict]:
+    """验证用户凭据"""
+    users = _load_users()
+
+    if username in users:
+        user_data = users[username]
+        hashed = _hash_password(password)
+        if user_data.get("password") == hashed:
+            return {
+                "username": username,
+                "role": user_data.get("role", "user"),
+                "name": user_data.get("name", username)
+            }
+    return None
+
+
+# 只有在设置了 CHAINLIT_AUTH_SECRET 时才启用认证
+if AUTH_ENABLED:
+    @cl.password_auth_callback
+    async def auth_callback(username: str, password: str) -> Optional[cl.User]:
+        """
+        Chainlit 密码认证回调
+
+        支持以下方式配置用户:
+        1. 环境变量 GEOMIND_USERS (JSON 格式)
+        2. 环境变量 GEOMIND_DEFAULT_USER + GEOMIND_DEFAULT_PASSWORD
+        3. users.json 文件
+        """
+        user_data = _verify_user(username, password)
+
+        if user_data:
+            return cl.User(
+                identifier=user_data["username"],
+                metadata={
+                    "role": user_data["role"],
+                    "name": user_data["name"],
+                    "provider": "credentials"
+                }
+            )
+        return None
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    """恢复历史会话"""
+    # 重新初始化 Memory
+    memory = ProjectMemory("default", name="恢复的对话")
+    cl.user_session.set("memory", memory)
+
+    # 恢复用户选择的模型
+    profile = cl.user_session.get("chat_profile")
+    if profile:
+        cl.user_session.set("provider", profile)
 
 
 # ============================================================
@@ -161,6 +275,12 @@ async def starters():
 async def on_chat_start():
     """对话启动时初始化"""
 
+    # 获取当前登录用户
+    user = cl.user_session.get("user")
+    user_name = "访客"
+    if user:
+        user_name = user.metadata.get("name", user.identifier)
+
     # 获取当前选择的模型
     profile = cl.user_session.get("chat_profile")
     if not profile or profile == "未配置":
@@ -178,8 +298,9 @@ async def on_chat_start():
         ).send()
         return
 
-    # 初始化 Memory
-    memory = ProjectMemory("default", name="快速对话")
+    # 初始化 Memory（使用用户标识）
+    user_id = user.identifier if user else "default"
+    memory = ProjectMemory(user_id, name="快速对话")
     cl.user_session.set("memory", memory)
     cl.user_session.set("provider", profile)
 
@@ -188,7 +309,7 @@ async def on_chat_start():
     model_name = config.get("default_model", "unknown")
 
     await cl.Message(
-        content=f"👋 你好！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
+        content=f"👋 你好，**{user_name}**！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
         f"当前模型: **{profile}** (`{model_name}`)\n\n"
         f"我可以帮你：\n"
         f"- 🔍 检索 70 万+ 验证论文\n"
@@ -197,6 +318,117 @@ async def on_chat_start():
         f"- ✍️ 辅助论文写作\n\n"
         f"直接告诉我你的需求吧！"
     ).send()
+
+
+# ============================================================
+# Canvas 侧边栏功能
+# ============================================================
+
+async def send_canvas_downloads(
+    canvas: CanvasManager,
+    response_text: str,
+    images: List[Dict] = None
+):
+    """
+    发送 Canvas 内容和下载链接
+
+    在侧边栏显示代码、图片，并提供多格式下载
+    """
+    elements = []
+
+    # 从响应中提取内容
+    canvas.extract_from_response(response_text)
+
+    # 添加执行生成的图片
+    if images:
+        for img in images:
+            canvas.add_image(img["data"], img["filename"])
+
+    # 如果没有内容，直接返回
+    if not canvas.items:
+        return
+
+    # 生成下载文件
+    download_elements = []
+
+    # 1. 所有代码合并为一个 Markdown
+    code_items = [item for item in canvas.items if item.type == "code"]
+    if code_items:
+        md_content = canvas.to_markdown(code_items)
+        download_elements.append(
+            cl.File(
+                name="code_all.md",
+                content=md_content.encode("utf-8"),
+                display="side",
+            )
+        )
+
+        # 每个代码块单独下载
+        for item in code_items:
+            download_elements.append(
+                cl.File(
+                    name=item.filename,
+                    content=item.content.encode("utf-8"),
+                    display="side",
+                )
+            )
+
+    # 2. 图片下载（PNG + PDF）
+    for item in canvas.images:
+        # PNG
+        download_elements.append(
+            cl.File(
+                name=item.filename,
+                content=base64.b64decode(item.content),
+                display="side",
+            )
+        )
+
+        # PDF（如果可用）
+        downloads = canvas.generate_downloads(item)
+        for filename, content, mime_type in downloads:
+            if filename.endswith(".pdf"):
+                download_elements.append(
+                    cl.File(
+                        name=filename,
+                        content=content,
+                        display="side",
+                    )
+                )
+
+    # 3. 生成完整报告（如果有多个内容）
+    if len(canvas.items) > 1:
+        full_md = canvas.to_markdown()
+        download_elements.append(
+            cl.File(
+                name="geomind_report.md",
+                content=full_md.encode("utf-8"),
+                display="side",
+            )
+        )
+
+        # PDF 报告
+        pdf_bytes = canvas.generate_combined_pdf()
+        if pdf_bytes:
+            download_elements.append(
+                cl.File(
+                    name="geomind_report.pdf",
+                    content=pdf_bytes,
+                    display="side",
+                )
+            )
+
+    # 发送 Canvas 消息
+    if download_elements:
+        # 构建下载列表说明
+        file_list = "\n".join([f"- {el.name}" for el in download_elements[:5]])
+        if len(download_elements) > 5:
+            file_list += f"\n- ...共 {len(download_elements)} 个文件"
+
+        await cl.Message(
+            content=f"📎 **Canvas 下载**\n\n{file_list}",
+            elements=download_elements,
+        ).send()
 
 
 # ============================================================
@@ -280,6 +512,10 @@ async def on_message(message: cl.Message):
 
     memory = cl.user_session.get("memory")
     user_text = message.content
+
+    # 初始化 Canvas（每次对话）
+    canvas = CanvasManager()
+    cl.user_session.set("canvas", canvas)
 
     # 处理上传文件
     file_context = ""
@@ -377,14 +613,20 @@ async def on_message(message: cl.Message):
 
     # ── Step 4: 自动代码执行 + 重试 ──
     code_blocks = extract_code_blocks(full_response)
+    collected_images = []  # 收集执行生成的图片
 
     if code_blocks:
-        await _auto_execute_code(
+        collected_images = await _auto_execute_code(
             code_blocks=code_blocks,
             provider=provider,
             system_prompt=system_prompt,
             history=clean_history,
         )
+
+    # ── Step 5: Canvas 侧边栏下载 ──
+    # 只有当有代码块或图片时才显示 Canvas
+    if code_blocks or collected_images:
+        await send_canvas_downloads(canvas, full_response, collected_images)
 
 
 # ============================================================
@@ -396,12 +638,16 @@ async def _auto_execute_code(
     provider: str,
     system_prompt: str,
     history: List[Dict],
-):
+) -> List[Dict]:
     """
     自动执行代码块，失败则让 AI 修复重试
 
     流程: 执行 → 检查 → OK 输出结果 / 失败 → AI 修代码 → 重试（最多 3 轮）
+
+    Returns:
+        收集到的图片列表 [{"data": base64, "filename": str}]
     """
+    collected_images = []  # 收集所有生成的图片
 
     for i, code in enumerate(code_blocks):
         retry_count = 0
@@ -429,7 +675,7 @@ async def _auto_execute_code(
                             content=f"**执行结果：**\n```\n{result['output']}\n```"
                         ).send()
 
-                    # 显示图表
+                    # 显示图表并收集
                     for img in result["images"]:
                         img_bytes = base64.b64decode(img["data"])
                         image_element = cl.Image(
@@ -442,6 +688,9 @@ async def _auto_execute_code(
                             content=f"📊 **{img['filename']}**",
                             elements=[image_element],
                         ).send()
+
+                        # 收集图片用于 Canvas
+                        collected_images.append(img)
 
                     break  # 成功，退出重试循环
 
@@ -486,6 +735,8 @@ async def _auto_execute_code(
                                 content=f"⚠️ AI 未能生成修复代码。原始错误：\n```\n{result['error'][:500]}\n```"
                             ).send()
                             break
+
+    return collected_images
 
 
 # ============================================================
