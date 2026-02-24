@@ -18,24 +18,24 @@ name = "GeoMind"
 # 默认展开消息（false 则折叠长消息）
 default_expand_messages = true
 
-# 显示 GitHub 链接（可选）
-# github = "https://github.com/your-repo"
-
 # 自定义 CSS
 custom_css = "/public/custom.css"
 
 # 自定义 JS（修复弹窗文字）
 custom_js = "/public/custom.js"
 
-# 自定义 favicon
-# custom_favicon = "/public/favicon.ico"
-
 [features]
+# 启用 LaTeX 渲染（必须在 [features] 下，子节之前）
+latex = true
+
 # 启用多模态（上传图片等）
 multi_modal = true
 
-# 禁用新对话确认弹窗（直接开始新对话）
+# 允许 HTML
 unsafe_allow_html = true
+
+# 启用语音输入（需要浏览器支持）
+speech_to_text = false
 
 # 启用自发文件上传（输入框旁显示上传按钮）
 [features.spontaneous_file_upload]
@@ -43,15 +43,6 @@ enabled = true
 accept = ["*/*"]
 max_files = 10
 max_size_mb = 50
-
-# 启用语音输入（需要浏览器支持）
-speech_to_text = false
-
-# 启用 LaTeX 渲染
-latex = true
-
-# 不显示 "Powered by Chainlit"（需要付费版）
-# hide_cot = true
 
 # 启用对话历史（侧边栏显示历史对话列表）
 [features.chat_history]
