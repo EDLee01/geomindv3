@@ -45,6 +45,19 @@ from core.database import (
     create_thread as db_create_thread,
     create_step as db_create_step,
     update_thread as db_update_thread,
+    # Projects 功能
+    create_project,
+    get_project,
+    get_user_projects,
+    get_default_project,
+    update_project,
+    delete_project,
+    get_project_threads,
+    set_thread_project,
+    add_project_file,
+    get_project_files,
+    delete_project_file,
+    get_project_knowledge_context,
 )
 from core.data_layer import GeoMindDataLayer
 from core.intent import (
@@ -135,6 +148,8 @@ def build_system_prompt(
     skill_name: str = None,
     memory: ProjectMemory = None,
     extra_context: str = "",
+    project: Dict = None,
+    project_knowledge: str = "",
 ) -> str:
     """构建系统提示词"""
 
@@ -232,6 +247,19 @@ $$R^2 = 1 - \\frac{\\sum_{i=1}^{n}(y_i - \\hat{y}_i)^2}{\\sum_{i=1}^{n}(y_i - \\
 
     if extra_context:
         base += f"\n\n{extra_context}"
+
+    # 注入 Project Instructions（如果有）
+    if project:
+        project_name = project.get("name", "未命名项目")
+        project_instructions = project.get("instructions", "")
+
+        base += f"\n\n## 📁 当前项目: {project_name}\n"
+
+        if project_instructions:
+            base += f"\n### 项目自定义指令（必须遵守）\n{project_instructions}\n"
+
+        if project_knowledge:
+            base += f"\n### 项目知识库\n以下是项目相关的参考资料，可以引用：\n{project_knowledge}\n"
 
     return base
 
@@ -465,6 +493,34 @@ async def on_chat_start():
         conversation_id = create_conversation(user_id)
         cl.user_session.set("conversation_id", conversation_id)
 
+        # 加载用户的 Projects
+        user_projects = get_user_projects(user_id)
+
+        # 如果用户没有任何项目，创建一个默认项目
+        if not user_projects:
+            default_project_id = create_project(
+                user_id=user_id,
+                name="默认项目",
+                description="通用对话项目",
+                instructions="",
+                icon="📁",
+                is_default=True
+            )
+            user_projects = get_user_projects(user_id)
+
+        # 获取默认项目或第一个项目
+        current_project = get_default_project(user_id)
+        if not current_project and user_projects:
+            current_project = user_projects[0]
+
+        if current_project:
+            cl.user_session.set("current_project", current_project)
+            cl.user_session.set("current_project_id", current_project["id"])
+
+            # 将当前对话关联到项目
+            if thread_id:
+                set_thread_project(thread_id, current_project["id"])
+
     # 初始化 Memory
     memory = ProjectMemory("default", name="快速对话")
     cl.user_session.set("memory", memory)
@@ -492,33 +548,52 @@ async def on_chat_start():
     cl.user_session.set("temperature", 0.7)
     cl.user_session.set("max_tokens", 16384)  # 默认更大的输出长度
 
+    # 构建设置面板组件
+    settings_widgets = [
+        cl.input_widget.Select(
+            id="model",
+            label="🤖 模型选择（服务: 模型）",
+            values=all_models,
+            initial_value=current_selection,
+        ),
+        cl.input_widget.Slider(
+            id="temperature",
+            label="🌡️ 温度 (Temperature)",
+            initial=0.7,
+            min=0,
+            max=1,
+            step=0.1,
+        ),
+        cl.input_widget.Slider(
+            id="max_tokens",
+            label="📝 最大输出长度 (Max Tokens)",
+            initial=16384,
+            min=1024,
+            max=65536,
+            step=4096,
+        ),
+    ]
+
+    # 如果用户已登录，添加 Project 选择器
+    if user_id:
+        user_projects = get_user_projects(user_id)
+        if user_projects:
+            project_options = [f"{p['icon']} {p['name']}" for p in user_projects]
+            current_project = cl.user_session.get("current_project")
+            current_project_name = f"{current_project['icon']} {current_project['name']}" if current_project else project_options[0]
+
+            settings_widgets.insert(0, cl.input_widget.Select(
+                id="project",
+                label="📁 当前项目",
+                values=project_options,
+                initial_value=current_project_name,
+            ))
+
+            # 保存项目列表供后续使用
+            cl.user_session.set("user_projects", user_projects)
+
     # 创建设置面板
-    settings = await cl.ChatSettings(
-        [
-            cl.input_widget.Select(
-                id="model",
-                label="🤖 模型选择（服务: 模型）",
-                values=all_models,
-                initial_value=current_selection,
-            ),
-            cl.input_widget.Slider(
-                id="temperature",
-                label="🌡️ 温度 (Temperature)",
-                initial=0.7,
-                min=0,
-                max=1,
-                step=0.1,
-            ),
-            cl.input_widget.Slider(
-                id="max_tokens",
-                label="📝 最大输出长度 (Max Tokens)",
-                initial=16384,
-                min=1024,
-                max=65536,
-                step=4096,
-            ),
-        ]
-    ).send()
+    settings = await cl.ChatSettings(settings_widgets).send()
 
     # 不发送欢迎消息，让界面保持简洁
     # 用户会看到 starters（快捷按钮）和输入框
@@ -598,7 +673,323 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
     existing_files.extend(uploaded_files_list)
     cl.user_session.set("uploaded_files", existing_files)
 
+    # 将文件添加到当前项目的知识库
+    current_project = cl.user_session.get("current_project")
+    if current_project:
+        for f_info in uploaded_files_list:
+            try:
+                # 读取文件内容
+                file_path = Path(f_info["path"])
+                file_size = file_path.stat().st_size if file_path.exists() else 0
+                ext = file_path.suffix.lower()
+
+                # 对于文本文件，提取内容
+                content_text = None
+                if ext in [".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css"]:
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as fh:
+                            content_text = fh.read()[:50000]  # 限制大小
+                    except:
+                        pass
+                elif ext in [".xlsx", ".xls"]:
+                    try:
+                        import pandas as pd
+                        df = pd.read_excel(file_path)
+                        content_text = df.to_string()[:50000]
+                    except:
+                        pass
+
+                # 保存到项目文件
+                add_project_file(
+                    project_id=current_project["id"],
+                    filename=f_info["name"],
+                    file_type=ext,
+                    file_size=file_size,
+                    content_text=content_text,
+                )
+            except Exception as e:
+                print(f"[APP] 保存文件到项目失败: {e}")
+
     return "\n".join(context_parts)
+
+
+# ============================================================
+# Project 命令处理
+# ============================================================
+
+async def handle_project_command(command: str):
+    """处理 /project 命令"""
+    user = cl.user_session.get("user")
+    if not user or not user.metadata:
+        await cl.Message(content="⚠️ 请先登录后使用 Project 功能").send()
+        return
+
+    user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
+    if not user_id:
+        await cl.Message(content="⚠️ 无法获取用户信息").send()
+        return
+
+    parts = command.strip().split(maxsplit=2)
+    action = parts[1] if len(parts) > 1 else "help"
+
+    if action == "list":
+        # 列出所有项目
+        projects = get_user_projects(user_id)
+        if not projects:
+            await cl.Message(content="📁 你还没有任何项目，使用 `/project create 项目名` 创建一个").send()
+            return
+
+        current_project = cl.user_session.get("current_project")
+        current_id = current_project["id"] if current_project else None
+
+        project_list = "## 📁 我的项目\n\n"
+        for p in projects:
+            is_current = " ✅ *当前*" if p["id"] == current_id else ""
+            is_default = " ⭐" if p["is_default"] else ""
+            project_list += f"- {p['icon']} **{p['name']}**{is_default}{is_current}\n"
+            if p["description"]:
+                project_list += f"  {p['description']}\n"
+
+        project_list += "\n---\n"
+        project_list += "**命令**：\n"
+        project_list += "- `/project create 项目名` - 创建新项目\n"
+        project_list += "- `/project switch 项目名` - 切换到项目\n"
+        project_list += "- `/project edit` - 编辑当前项目设置\n"
+        project_list += "- `/project files` - 查看项目文件\n"
+        project_list += "- `/project delete 项目名` - 删除项目\n"
+
+        await cl.Message(content=project_list).send()
+
+    elif action == "create":
+        # 创建新项目
+        name = parts[2] if len(parts) > 2 else None
+        if not name:
+            await cl.Message(content="⚠️ 请指定项目名：`/project create 我的研究项目`").send()
+            return
+
+        project_id = create_project(
+            user_id=user_id,
+            name=name,
+            description="",
+            instructions="",
+            icon="📁",
+            is_default=False
+        )
+
+        # 自动切换到新项目
+        new_project = get_project(project_id)
+        cl.user_session.set("current_project", new_project)
+        cl.user_session.set("current_project_id", project_id)
+
+        # 更新项目列表
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(
+            content=f"✅ **项目已创建**: {name}\n\n"
+            f"已自动切换到该项目。\n"
+            f"使用 `/project edit` 设置项目的自定义指令。"
+        ).send()
+
+    elif action == "switch":
+        # 切换项目
+        name = parts[2] if len(parts) > 2 else None
+        if not name:
+            await cl.Message(content="⚠️ 请指定项目名：`/project switch 我的研究项目`").send()
+            return
+
+        projects = get_user_projects(user_id)
+        target = None
+        for p in projects:
+            if p["name"] == name:
+                target = p
+                break
+
+        if not target:
+            await cl.Message(content=f"⚠️ 未找到项目: {name}\n使用 `/project list` 查看所有项目").send()
+            return
+
+        cl.user_session.set("current_project", target)
+        cl.user_session.set("current_project_id", target["id"])
+
+        # 关联当前对话到新项目
+        thread_id = cl.user_session.get("thread_id")
+        if thread_id:
+            set_thread_project(thread_id, target["id"])
+
+        await cl.Message(
+            content=f"✅ 已切换到项目: {target['icon']} **{target['name']}**"
+        ).send()
+
+    elif action == "edit":
+        # 编辑当前项目
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        # 显示当前设置
+        content = f"## ✏️ 编辑项目: {current_project['icon']} {current_project['name']}\n\n"
+        content += f"**当前描述**: {current_project.get('description') or '(无)'}\n\n"
+        content += f"**当前自定义指令**:\n```\n{current_project.get('instructions') or '(无)'}\n```\n\n"
+        content += "---\n"
+        content += "**修改命令**:\n"
+        content += "- `/project set-name 新名称` - 修改名称\n"
+        content += "- `/project set-desc 描述内容` - 修改描述\n"
+        content += "- `/project set-instructions 指令内容` - 设置自定义指令\n"
+        content += "- `/project set-icon 🔬` - 设置图标\n"
+
+        await cl.Message(content=content).send()
+
+    elif action == "set-name":
+        # 设置项目名称
+        new_name = parts[2] if len(parts) > 2 else None
+        if not new_name:
+            await cl.Message(content="⚠️ 请指定新名称：`/project set-name 新名称`").send()
+            return
+
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], name=new_name)
+        current_project["name"] = new_name
+        cl.user_session.set("current_project", current_project)
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(content=f"✅ 项目名称已更新为: **{new_name}**").send()
+
+    elif action == "set-desc":
+        # 设置项目描述
+        desc = parts[2] if len(parts) > 2 else ""
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], description=desc)
+        current_project["description"] = desc
+        cl.user_session.set("current_project", current_project)
+
+        await cl.Message(content=f"✅ 项目描述已更新").send()
+
+    elif action == "set-instructions":
+        # 设置自定义指令
+        instructions = parts[2] if len(parts) > 2 else ""
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], instructions=instructions)
+        current_project["instructions"] = instructions
+        cl.user_session.set("current_project", current_project)
+
+        await cl.Message(
+            content=f"✅ 项目自定义指令已更新\n\n"
+            f"这些指令会在每次对话中自动注入到系统提示词中。\n\n"
+            f"**当前指令**:\n```\n{instructions or '(无)'}\n```"
+        ).send()
+
+    elif action == "set-icon":
+        # 设置图标
+        icon = parts[2] if len(parts) > 2 else "📁"
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], icon=icon)
+        current_project["icon"] = icon
+        cl.user_session.set("current_project", current_project)
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(content=f"✅ 项目图标已更新为: {icon}").send()
+
+    elif action == "files":
+        # 查看项目文件
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        files = get_project_files(current_project["id"])
+
+        content = f"## 📄 项目文件: {current_project['icon']} {current_project['name']}\n\n"
+
+        if not files:
+            content += "*暂无文件*\n\n"
+            content += "**上传文件方法**：\n"
+            content += "1. 在对话中上传文件，会自动添加到当前项目\n"
+            content += "2. 或使用 `/project add-file` 命令（开发中）\n"
+        else:
+            for f in files:
+                size_kb = f["file_size"] / 1024 if f["file_size"] else 0
+                content += f"- 📄 **{f['filename']}** ({size_kb:.1f} KB)\n"
+
+            content += f"\n共 {len(files)} 个文件"
+
+        await cl.Message(content=content).send()
+
+    elif action == "delete":
+        # 删除项目
+        name = parts[2] if len(parts) > 2 else None
+        if not name:
+            await cl.Message(content="⚠️ 请指定要删除的项目名：`/project delete 项目名`").send()
+            return
+
+        projects = get_user_projects(user_id)
+        target = None
+        for p in projects:
+            if p["name"] == name:
+                target = p
+                break
+
+        if not target:
+            await cl.Message(content=f"⚠️ 未找到项目: {name}").send()
+            return
+
+        # 检查是否是当前项目
+        current_project = cl.user_session.get("current_project")
+        if current_project and current_project["id"] == target["id"]:
+            await cl.Message(content="⚠️ 不能删除当前正在使用的项目，请先切换到其他项目").send()
+            return
+
+        delete_project(target["id"])
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(content=f"✅ 项目 **{name}** 已删除").send()
+
+    else:
+        # 显示帮助
+        help_text = """## 📁 Project 命令帮助
+
+Projects 功能让你可以为不同的研究项目设置独立的：
+- **自定义指令** - 每个项目的专属 AI 行为规则
+- **知识库文件** - 上传的文件会作为项目参考资料
+- **对话历史** - 每个项目的对话独立管理
+
+### 可用命令
+
+| 命令 | 说明 |
+|------|------|
+| `/project list` | 列出所有项目 |
+| `/project create 项目名` | 创建新项目 |
+| `/project switch 项目名` | 切换到项目 |
+| `/project edit` | 编辑当前项目设置 |
+| `/project set-instructions 指令` | 设置自定义指令 |
+| `/project files` | 查看项目文件 |
+| `/project delete 项目名` | 删除项目 |
+
+### 示例
+
+```
+/project create 深度学习遥感研究
+/project set-instructions 专注于深度学习在遥感影像分类中的应用，优先引用2020年后的论文
+/project switch 默认项目
+```
+"""
+        await cl.Message(content=help_text).send()
 
 
 # ============================================================
@@ -618,6 +1009,11 @@ async def on_message(message: cl.Message):
     user_text = message.content
     conversation_id = cl.user_session.get("conversation_id")
     thread_id = cl.user_session.get("thread_id")
+
+    # ── 处理 /project 命令 ──
+    if user_text.startswith("/project"):
+        await handle_project_command(user_text)
+        return
 
     # 保存用户消息到新的线程系统
     if thread_id:
@@ -808,10 +1204,18 @@ async def on_message(message: cl.Message):
     if literature_context:
         extra_ctx += literature_context
 
+    # 获取当前项目信息和知识库
+    current_project = cl.user_session.get("current_project")
+    project_knowledge = ""
+    if current_project:
+        project_knowledge = get_project_knowledge_context(current_project["id"])
+
     system_prompt = build_system_prompt(
         skill_name=matched_skill,
         memory=memory,
         extra_context=extra_ctx,
+        project=current_project,
+        project_knowledge=project_knowledge,
     )
 
     # 获取用户设置
@@ -1053,6 +1457,24 @@ async def _auto_execute_code(
 @cl.on_settings_update
 async def on_settings_update(settings):
     """处理用户修改设置"""
+    # 更新项目选择
+    if "project" in settings:
+        project_name = settings["project"]
+        user_projects = cl.user_session.get("user_projects", [])
+
+        # 根据名称找到项目（格式: "📁 项目名"）
+        for p in user_projects:
+            full_name = f"{p['icon']} {p['name']}"
+            if full_name == project_name:
+                cl.user_session.set("current_project", p)
+                cl.user_session.set("current_project_id", p["id"])
+
+                # 将当前对话关联到新项目
+                thread_id = cl.user_session.get("thread_id")
+                if thread_id:
+                    set_thread_project(thread_id, p["id"])
+                break
+
     # 更新模型选择（格式: "提供商: 模型"）
     if "model" in settings:
         model_str = settings["model"]
@@ -1081,8 +1503,14 @@ async def on_settings_update(settings):
     config = MODEL_PROVIDERS.get(provider, {})
     icon = config.get("icon", "🤖")
 
+    # 获取当前项目信息
+    current_project = cl.user_session.get("current_project")
+    project_info = ""
+    if current_project:
+        project_info = f"\n- 项目: {current_project['icon']} **{current_project['name']}**"
+
     await cl.Message(
-        content=f"⚙️ **设置已更新**\n"
+        content=f"⚙️ **设置已更新**{project_info}\n"
         f"- 服务: {icon} **{provider}**\n"
         f"- 模型: `{model}`\n"
         f"- 温度: `{temp}`\n"

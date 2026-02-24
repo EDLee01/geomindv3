@@ -1,6 +1,6 @@
 """
 GeoMind Core - 用户数据库模块
-支持用户注册、登录和对话历史保存
+支持用户注册、登录、对话历史和 Projects 功能
 适配 Chainlit 数据层（使用 UUID 作为 thread_id）
 """
 
@@ -105,6 +105,44 @@ def init_database():
             FOREIGN KEY (conversation_id) REFERENCES conversations(id)
         )
     """)
+
+    # Projects 表 - 类似 Claude Projects 功能
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            instructions TEXT,
+            icon TEXT DEFAULT '📁',
+            color TEXT DEFAULT '#6366f1',
+            is_default INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # Project Files 表 - 项目知识库文件
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS project_files (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            file_type TEXT,
+            file_size INTEGER,
+            content_text TEXT,
+            embedding_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )
+    """)
+
+    # 添加 project_id 到 threads 表（如果不存在）
+    try:
+        cursor.execute("ALTER TABLE threads ADD COLUMN project_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
 
     # 添加 uuid 列到现有用户表（如果不存在）
     try:
@@ -658,6 +696,382 @@ def get_conversation_messages(conversation_id: int) -> List[Dict]:
         }
         for row in rows
     ]
+
+
+# ============================================================
+# Projects 管理（类似 Claude Projects）
+# ============================================================
+
+def create_project(
+    user_id: int,
+    name: str,
+    description: str = None,
+    instructions: str = None,
+    icon: str = "📁",
+    color: str = "#6366f1",
+    is_default: bool = False
+) -> str:
+    """创建新项目，返回项目 UUID"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    project_id = str(uuid.uuid4())
+
+    # 如果是默认项目，取消其他默认项目
+    if is_default:
+        cursor.execute(
+            "UPDATE projects SET is_default = 0 WHERE user_id = ?",
+            (user_id,)
+        )
+
+    cursor.execute(
+        """INSERT INTO projects (id, user_id, name, description, instructions, icon, color, is_default)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (project_id, user_id, name, description, instructions, icon, color, 1 if is_default else 0)
+    )
+    conn.commit()
+    conn.close()
+
+    return project_id
+
+
+def get_project(project_id: str) -> Optional[Dict]:
+    """获取项目信息"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT id, user_id, name, description, instructions, icon, color, is_default, created_at, updated_at
+           FROM projects WHERE id = ?""",
+        (project_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "description": row["description"],
+            "instructions": row["instructions"],
+            "icon": row["icon"],
+            "color": row["color"],
+            "is_default": bool(row["is_default"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"]
+        }
+    return None
+
+
+def get_user_projects(user_id: int) -> List[Dict]:
+    """获取用户的所有项目"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT id, user_id, name, description, instructions, icon, color, is_default, created_at, updated_at
+           FROM projects
+           WHERE user_id = ?
+           ORDER BY is_default DESC, updated_at DESC""",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "description": row["description"],
+            "instructions": row["instructions"],
+            "icon": row["icon"],
+            "color": row["color"],
+            "is_default": bool(row["is_default"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"]
+        }
+        for row in rows
+    ]
+
+
+def get_default_project(user_id: int) -> Optional[Dict]:
+    """获取用户的默认项目"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT id, user_id, name, description, instructions, icon, color, is_default, created_at, updated_at
+           FROM projects
+           WHERE user_id = ? AND is_default = 1""",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "description": row["description"],
+            "instructions": row["instructions"],
+            "icon": row["icon"],
+            "color": row["color"],
+            "is_default": bool(row["is_default"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"]
+        }
+    return None
+
+
+def update_project(
+    project_id: str,
+    name: str = None,
+    description: str = None,
+    instructions: str = None,
+    icon: str = None,
+    color: str = None,
+    is_default: bool = None
+):
+    """更新项目信息"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    # 如果设置为默认项目，先取消其他默认项目
+    if is_default:
+        # 获取项目的 user_id
+        cursor.execute("SELECT user_id FROM projects WHERE id = ?", (project_id,))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                "UPDATE projects SET is_default = 0 WHERE user_id = ?",
+                (row["user_id"],)
+            )
+
+    updates = ["updated_at = ?"]
+    params = [datetime.now().isoformat()]
+
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if description is not None:
+        updates.append("description = ?")
+        params.append(description)
+    if instructions is not None:
+        updates.append("instructions = ?")
+        params.append(instructions)
+    if icon is not None:
+        updates.append("icon = ?")
+        params.append(icon)
+    if color is not None:
+        updates.append("color = ?")
+        params.append(color)
+    if is_default is not None:
+        updates.append("is_default = ?")
+        params.append(1 if is_default else 0)
+
+    params.append(project_id)
+    cursor.execute(
+        f"UPDATE projects SET {', '.join(updates)} WHERE id = ?",
+        params
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_project(project_id: str):
+    """删除项目及其所有文件和关联的对话"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    # 删除项目文件
+    cursor.execute("DELETE FROM project_files WHERE project_id = ?", (project_id,))
+
+    # 将关联的 threads 的 project_id 设为 NULL
+    cursor.execute("UPDATE threads SET project_id = NULL WHERE project_id = ?", (project_id,))
+
+    # 删除项目
+    cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def get_project_threads(project_id: str, limit: int = 50) -> List[Dict]:
+    """获取项目的所有对话"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT id, user_id, user_identifier, name, metadata, tags, created_at, updated_at
+           FROM threads
+           WHERE project_id = ?
+           ORDER BY updated_at DESC
+           LIMIT ?""",
+        (project_id, limit)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "user_identifier": row["user_identifier"],
+            "name": row["name"],
+            "metadata": json.loads(row["metadata"] or "{}"),
+            "tags": json.loads(row["tags"] or "[]"),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"]
+        }
+        for row in rows
+    ]
+
+
+def set_thread_project(thread_id: str, project_id: str):
+    """将对话关联到项目"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE threads SET project_id = ? WHERE id = ?",
+        (project_id, thread_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# Project Files 管理
+# ============================================================
+
+def add_project_file(
+    project_id: str,
+    filename: str,
+    file_type: str = None,
+    file_size: int = None,
+    content_text: str = None,
+    embedding_id: str = None
+) -> str:
+    """添加文件到项目，返回文件 UUID"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    file_id = str(uuid.uuid4())
+
+    cursor.execute(
+        """INSERT INTO project_files (id, project_id, filename, file_type, file_size, content_text, embedding_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (file_id, project_id, filename, file_type, file_size, content_text, embedding_id)
+    )
+
+    # 更新项目的更新时间
+    cursor.execute(
+        "UPDATE projects SET updated_at = ? WHERE id = ?",
+        (datetime.now().isoformat(), project_id)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return file_id
+
+
+def get_project_files(project_id: str) -> List[Dict]:
+    """获取项目的所有文件"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT id, project_id, filename, file_type, file_size, content_text, embedding_id, created_at
+           FROM project_files
+           WHERE project_id = ?
+           ORDER BY created_at DESC""",
+        (project_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": row["id"],
+            "project_id": row["project_id"],
+            "filename": row["filename"],
+            "file_type": row["file_type"],
+            "file_size": row["file_size"],
+            "content_text": row["content_text"],
+            "embedding_id": row["embedding_id"],
+            "created_at": row["created_at"]
+        }
+        for row in rows
+    ]
+
+
+def get_project_file(file_id: str) -> Optional[Dict]:
+    """获取单个文件信息"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT id, project_id, filename, file_type, file_size, content_text, embedding_id, created_at
+           FROM project_files WHERE id = ?""",
+        (file_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return {
+            "id": row["id"],
+            "project_id": row["project_id"],
+            "filename": row["filename"],
+            "file_type": row["file_type"],
+            "file_size": row["file_size"],
+            "content_text": row["content_text"],
+            "embedding_id": row["embedding_id"],
+            "created_at": row["created_at"]
+        }
+    return None
+
+
+def delete_project_file(file_id: str):
+    """删除项目文件"""
+    conn = _get_connection()
+    cursor = conn.cursor()
+
+    # 获取 project_id 以更新项目时间
+    cursor.execute("SELECT project_id FROM project_files WHERE id = ?", (file_id,))
+    row = cursor.fetchone()
+
+    cursor.execute("DELETE FROM project_files WHERE id = ?", (file_id,))
+
+    if row:
+        cursor.execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), row["project_id"])
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_project_knowledge_context(project_id: str) -> str:
+    """获取项目的知识库上下文（所有文件内容合并）"""
+    files = get_project_files(project_id)
+
+    if not files:
+        return ""
+
+    context_parts = []
+    for f in files:
+        if f["content_text"]:
+            context_parts.append(f"[文件: {f['filename']}]\n{f['content_text']}\n")
+
+    if context_parts:
+        return "\n---\n".join(context_parts)
+    return ""
 
 
 # 初始化数据库（模块加载时执行）
