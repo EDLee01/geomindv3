@@ -40,7 +40,7 @@ speech_to_text = false
 # 启用自发文件上传（输入框旁显示上传按钮）
 [features.spontaneous_file_upload]
 enabled = true
-accept = ["*/*"]
+accept = ["text/*", "application/*", "image/*"]
 max_files = 10
 max_size_mb = 50
 
