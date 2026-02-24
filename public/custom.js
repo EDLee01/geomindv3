@@ -29,104 +29,94 @@
   });
 
   // ============================================================
-  // 2. 添加 Projects 按钮到侧边栏
+  // 2. 添加 Projects 浮动按钮（固定位置，更可靠）
   // ============================================================
   function addProjectsButton() {
-    // 查找侧边栏导航容器
-    const sidebar = document.querySelector('[class*="MuiDrawer"] nav, aside nav, [class*="sidebar"] nav');
-    if (!sidebar) {
-      // 尝试其他选择器
-      const drawerContent = document.querySelector('[class*="MuiDrawer-paper"], [class*="drawer"]');
-      if (drawerContent) {
-        // 查找按钮容器
-        const buttonContainer = drawerContent.querySelector('[class*="MuiList"], ul, div > button')?.parentElement;
-        if (buttonContainer && !document.getElementById('geomind-projects-btn')) {
-          insertProjectsButton(buttonContainer);
-        }
-      }
+    if (document.getElementById('geomind-projects-btn')) {
       return;
     }
 
-    if (!document.getElementById('geomind-projects-btn')) {
-      insertProjectsButton(sidebar);
-    }
-  }
-
-  function insertProjectsButton(container) {
-    // 创建 Projects 按钮
-    const projectsBtn = document.createElement('button');
-    projectsBtn.id = 'geomind-projects-btn';
-    projectsBtn.title = 'Projects - 项目管理';
-    projectsBtn.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
-        <path d="M12 10v6"/>
-        <path d="m9 13 3-3 3 3"/>
-      </svg>
-    `;
-    projectsBtn.style.cssText = `
+    // 创建浮动按钮
+    const btn = document.createElement('button');
+    btn.id = 'geomind-projects-btn';
+    btn.title = '📁 Projects - 点击管理项目';
+    btn.innerHTML = '📁';
+    btn.style.cssText = `
+      position: fixed;
+      top: 12px;
+      left: 60px;
+      z-index: 9999;
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: 8px;
+      background: rgba(99, 102, 241, 0.9);
+      color: white;
+      font-size: 18px;
+      cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 40px;
-      height: 40px;
-      border: none;
-      border-radius: 8px;
-      background: transparent;
-      color: #9ca3af;
-      cursor: pointer;
-      transition: all 0.2s;
-      margin: 4px auto;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      transition: all 0.2s ease;
     `;
 
-    projectsBtn.onmouseover = function() {
-      this.style.background = 'rgba(255,255,255,0.1)';
-      this.style.color = '#fff';
+    btn.onmouseover = function() {
+      this.style.transform = 'scale(1.1)';
+      this.style.background = 'rgba(99, 102, 241, 1)';
     };
-    projectsBtn.onmouseout = function() {
-      this.style.background = 'transparent';
-      this.style.color = '#9ca3af';
+    btn.onmouseout = function() {
+      this.style.transform = 'scale(1)';
+      this.style.background = 'rgba(99, 102, 241, 0.9)';
     };
 
-    projectsBtn.onclick = function() {
+    btn.onclick = function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+
       // 发送 /project list 命令
-      const input = document.querySelector('textarea, input[type="text"]');
-      if (input) {
-        // 模拟输入
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        nativeInputValueSetter.call(input, '/project list');
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+      const textarea = document.querySelector('textarea');
+      if (textarea) {
+        textarea.value = '/project list';
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-        // 查找发送按钮并点击
+        // 触发表单提交
         setTimeout(() => {
-          const sendBtn = document.querySelector('button[type="submit"], button[class*="send"]');
-          if (sendBtn) {
-            sendBtn.click();
-          } else {
-            // 模拟 Enter 键
-            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+          const form = textarea.closest('form');
+          if (form) {
+            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
           }
+          // 备用：按 Enter
+          textarea.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true
+          }));
         }, 100);
       }
     };
 
-    // 插入到容器
-    const firstButton = container.querySelector('button');
-    if (firstButton) {
-      // 插入到第一个按钮后面
-      firstButton.parentNode.insertBefore(projectsBtn, firstButton.nextSibling);
-    } else {
-      container.appendChild(projectsBtn);
-    }
-
+    document.body.appendChild(btn);
     console.log('[GeoMind] Projects 按钮已添加');
   }
 
-  // 定期检查并添加按钮（因为侧边栏可能是动态加载的）
-  setInterval(addProjectsButton, 1000);
+  // 页面加载后添加按钮
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(addProjectsButton, 500));
+  } else {
+    setTimeout(addProjectsButton, 500);
+  }
 
-  // 初始尝试
-  setTimeout(addProjectsButton, 500);
+  // 路由变化时重新添加
+  let lastUrl = location.href;
+  setInterval(() => {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      setTimeout(addProjectsButton, 500);
+    }
+  }, 1000);
 
   console.log('[GeoMind] 自定义 JS 已加载');
 })();
