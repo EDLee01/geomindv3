@@ -32,91 +32,116 @@
   // 2. 添加 Projects 浮动按钮（固定位置，更可靠）
   // ============================================================
   function addProjectsButton() {
-    if (document.getElementById('geomind-projects-btn')) {
-      return;
-    }
-
-    // 创建浮动按钮
-    const btn = document.createElement('button');
-    btn.id = 'geomind-projects-btn';
-    btn.title = '📁 Projects - 点击管理项目';
-    btn.innerHTML = '📁';
-    btn.style.cssText = `
-      position: fixed;
-      top: 12px;
-      left: 60px;
-      z-index: 9999;
-      width: 36px;
-      height: 36px;
-      border: none;
-      border-radius: 8px;
-      background: rgba(99, 102, 241, 0.9);
-      color: white;
-      font-size: 18px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-      transition: all 0.2s ease;
-    `;
-
-    btn.onmouseover = function() {
-      this.style.transform = 'scale(1.1)';
-      this.style.background = 'rgba(99, 102, 241, 1)';
-    };
-    btn.onmouseout = function() {
-      this.style.transform = 'scale(1)';
-      this.style.background = 'rgba(99, 102, 241, 0.9)';
-    };
-
-    btn.onclick = function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-
-      // 发送 /project list 命令
-      const textarea = document.querySelector('textarea');
-      if (textarea) {
-        textarea.value = '/project list';
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-
-        // 触发表单提交
-        setTimeout(() => {
-          const form = textarea.closest('form');
-          if (form) {
-            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-          }
-          // 备用：按 Enter
-          textarea.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter',
-            code: 'Enter',
-            keyCode: 13,
-            which: 13,
-            bubbles: true
-          }));
-        }, 100);
+    try {
+      // 如果已存在，跳过
+      if (document.getElementById('geomind-projects-btn')) {
+        return;
       }
-    };
 
-    document.body.appendChild(btn);
-    console.log('[GeoMind] Projects 按钮已添加');
+      // 创建浮动按钮 - 放在右下角更明显
+      const btn = document.createElement('button');
+      btn.id = 'geomind-projects-btn';
+      btn.title = 'Projects - 点击管理项目';
+      btn.innerHTML = '📁';
+      btn.style.cssText = `
+        position: fixed !important;
+        bottom: 100px !important;
+        right: 20px !important;
+        z-index: 99999 !important;
+        width: 48px !important;
+        height: 48px !important;
+        border: none !important;
+        border-radius: 50% !important;
+        background: #6366f1 !important;
+        color: white !important;
+        font-size: 22px !important;
+        cursor: pointer !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+        transition: all 0.2s ease !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+      `;
+
+      btn.onmouseover = function() {
+        this.style.transform = 'scale(1.1)';
+        this.style.boxShadow = '0 6px 16px rgba(0,0,0,0.5)';
+      };
+      btn.onmouseout = function() {
+        this.style.transform = 'scale(1)';
+        this.style.boxShadow = '0 4px 12px rgba(0,0,0,0.4)';
+      };
+
+      btn.onclick = function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // 发送 /project list 命令
+        const textarea = document.querySelector('textarea');
+        if (textarea) {
+          textarea.value = '/project list';
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+          // 触发表单提交
+          setTimeout(() => {
+            const form = textarea.closest('form');
+            if (form) {
+              form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            }
+            // 备用：按 Enter
+            textarea.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Enter',
+              code: 'Enter',
+              keyCode: 13,
+              which: 13,
+              bubbles: true
+            }));
+          }, 100);
+        } else {
+          console.warn('[GeoMind] 找不到输入框');
+        }
+      };
+
+      document.body.appendChild(btn);
+      console.log('[GeoMind] Projects 按钮已添加到页面');
+    } catch (err) {
+      console.error('[GeoMind] 添加按钮失败:', err);
+    }
+  }
+
+  // 多次尝试添加按钮
+  function ensureButton() {
+    addProjectsButton();
+    // 再次检查
+    setTimeout(() => {
+      if (!document.getElementById('geomind-projects-btn')) {
+        console.log('[GeoMind] 按钮不存在，重试...');
+        addProjectsButton();
+      }
+    }, 2000);
   }
 
   // 页面加载后添加按钮
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(addProjectsButton, 500));
+    document.addEventListener('DOMContentLoaded', () => setTimeout(ensureButton, 1000));
   } else {
-    setTimeout(addProjectsButton, 500);
+    setTimeout(ensureButton, 1000);
   }
 
   // 路由变化时重新添加
   let lastUrl = location.href;
   setInterval(() => {
+    const btn = document.getElementById('geomind-projects-btn');
+    if (!btn) {
+      addProjectsButton();
+    }
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       setTimeout(addProjectsButton, 500);
     }
-  }, 1000);
+  }, 2000);
 
   console.log('[GeoMind] 自定义 JS 已加载');
 })();
