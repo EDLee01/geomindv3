@@ -1,5 +1,22 @@
 // GeoMind 自定义 JS
+console.log('%c[GeoMind] 自定义 JS 开始加载...', 'background: #6366f1; color: white; padding: 4px 8px; border-radius: 4px;');
+
 (function() {
+  // 立即执行的测试 - 确认 JS 已加载
+  console.log('[GeoMind] IIFE 开始执行');
+
+  // 临时：添加一个可见的测试指示器
+  try {
+    const testDiv = document.createElement('div');
+    testDiv.id = 'geomind-js-loaded';
+    testDiv.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);background:#22c55e;color:white;padding:4px 12px;border-radius:0 0 8px 8px;font-size:12px;z-index:999999;';
+    testDiv.textContent = 'GeoMind JS ✓';
+    document.body.appendChild(testDiv);
+    // 3秒后自动消失
+    setTimeout(() => testDiv.remove(), 3000);
+  } catch(e) {
+    console.error('[GeoMind] 测试指示器创建失败', e);
+  }
   // ============================================================
   // 1. 修复新对话弹窗文字
   // ============================================================
