@@ -1,0 +1,23 @@
+{
+  "components": {
+    "organisms": {
+      "chat": {
+        "history": {
+          "index": {
+            "noConversations": "暂无历史对话",
+            "loading": "加载中..."
+          }
+        },
+        "newChatDialog": {
+          "title": "开始新对话？",
+          "description": "当前对话会保存在左侧历史记录中。",
+          "cancel": "取消",
+          "confirm": "确认"
+        },
+        "newChatButton": {
+          "newChat": "新对话"
+        }
+      }
+    }
+  }
+}

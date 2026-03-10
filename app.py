@@ -8,6 +8,7 @@ Features:
 - 代码自动执行 + 失败重试
 - Skills 系统（.md 知识库）
 - 流式输出
+- 用户系统 + 对话历史
 """
 
 import chainlit as cl
@@ -22,11 +23,51 @@ from core.llm import (
     get_available_providers,
     stream_llm,
     call_llm,
+    get_provider_config,
 )
 from core.literature import search_papers, format_papers_markdown, format_papers_bibtex
-from core.code_runner import execute_python, extract_code_blocks, format_execution_result, build_fix_prompt
+from core.code_runner import execute_python, extract_code_blocks, extract_markdown_blocks, format_execution_result, build_fix_prompt
 from core.skills import SkillsManager
 from core.memory import ProjectMemory
+import uuid as uuid_module
+from core.database import (
+    create_user,
+    authenticate_user,
+    get_user_by_id,
+    get_user_by_identifier,
+    user_exists,
+    create_conversation,
+    get_user_conversations,
+    add_message,
+    get_conversation_messages,
+    update_conversation_title,
+    get_thread_steps,
+    create_thread as db_create_thread,
+    create_step as db_create_step,
+    update_thread as db_update_thread,
+    # Projects 功能
+    create_project,
+    get_project,
+    get_user_projects,
+    get_default_project,
+    update_project,
+    delete_project,
+    get_project_threads,
+    set_thread_project,
+    add_project_file,
+    get_project_files,
+    delete_project_file,
+    get_project_knowledge_context,
+)
+from core.data_layer import GeoMindDataLayer
+from core.intent import (
+    Intent,
+    IntentType,
+    INTENT_SYSTEM_PROMPT,
+    get_intent_prompt,
+    parse_intent_response,
+    fallback_intent_detection,
+)
 
 # ============================================================
 # 全局配置
@@ -39,6 +80,65 @@ MAX_CODE_RETRIES = 3  # 代码执行最大重试次数
 # 初始化 Skills
 skills_manager = SkillsManager(SKILLS_DIR)
 
+# 注册 Chainlit 数据层（用于侧边栏历史对话）
+@cl.data_layer
+def get_data_layer():
+    return GeoMindDataLayer()
+
+
+# ============================================================
+# 用户认证（数据库版）
+# ============================================================
+
+# 只有配置了 CHAINLIT_AUTH_SECRET 才启用认证
+if os.getenv("CHAINLIT_AUTH_SECRET"):
+    @cl.password_auth_callback
+    def auth_callback(username: str, password: str) -> Optional[cl.User]:
+        """密码认证回调 - 使用数据库验证"""
+        # 解析用户名格式
+        # 支持两种格式：
+        # 1. 用户名|邮箱 - 带邮箱注册
+        # 2. 纯用户名 - 不带邮箱
+        if "|" in username:
+            actual_username, email = username.split("|", 1)
+        else:
+            actual_username = username
+            email = f"{username}@geomind.local"  # 默认邮箱
+
+        # 尝试数据库认证（已有用户登录）
+        user = authenticate_user(actual_username, password)
+        if user:
+            return cl.User(
+                identifier=user["username"],
+                metadata={
+                    "user_id": user["id"],
+                    "email": user["email"],
+                    "role": "admin" if actual_username == "admin" else "user",
+                    "just_registered": False  # 明确标记：不是新注册
+                }
+            )
+
+        # 检查用户是否已存在（密码错误的情况）
+        if user_exists(actual_username):
+            # 用户存在但密码错误，返回 None
+            return None
+
+        # 用户不存在，自动注册
+        result = create_user(actual_username, email, password)
+        if result["success"]:
+            return cl.User(
+                identifier=actual_username,
+                metadata={
+                    "user_id": result["user_id"],
+                    "email": email,
+                    "role": "user",
+                    "just_registered": True  # 真正的新注册
+                }
+            )
+
+        # 注册失败
+        return None
+
 
 # ============================================================
 # 系统提示词构建
@@ -48,16 +148,74 @@ def build_system_prompt(
     skill_name: str = None,
     memory: ProjectMemory = None,
     extra_context: str = "",
+    project: Dict = None,
+    project_knowledge: str = "",
 ) -> str:
     """构建系统提示词"""
 
     base = """你是 GeoMind，一个专业的地球科学 AI 研究助手。
 
 ## 核心能力
-1. 🔍 **文献检索** — 搜索 70 万+ DOI 验证论文库
+1. 🔍 **文献检索** — 搜索 70 万+ DOI 验证论文库（Qdrant 向量数据库）
 2. 📊 **数据分析** — 统计分析、时序分析、空间分析
 3. 📈 **可视化** — 生成学术级图表（matplotlib）
 4. ✍️ **论文写作** — 辅助撰写学术论文各章节
+
+## 输出格式规范（必须严格遵守）
+
+### ⛔ 禁止事项
+- **绝对禁止输出任何 XML/HTML 标签**，例如 `<search_papers>`、`<query>`、`<tool>` 等
+- 不要使用任何类似函数调用或工具调用的格式
+- 不要输出机器可读的指令格式
+
+### ✅ 正确的输出格式
+用自然、结构化的 Markdown 格式：
+
+### 📐 公式格式规范（极其重要，必须严格遵守）
+
+**行内公式**：用 `$...$` 包裹，适合简短公式
+- 例：相关系数 $r = 0.95$，显著性水平 $p < 0.01$
+
+**独立公式**：用 `$$...$$` 包裹，**`$$` 必须和公式写在同一行**，绝对不能分行！
+- ✅ 正确：`$$R^2 = 1 - \\frac{\\sum(y_i - \\hat{y}_i)^2}{\\sum(y_i - \\bar{y})^2}$$`
+- ❌ 错误：把 `$$` 单独放一行，公式放另一行
+
+正确示例：
+
+$$R^2 = 1 - \\frac{\\sum_{i=1}^{n}(y_i - \\hat{y}_i)^2}{\\sum_{i=1}^{n}(y_i - \\bar{y})^2}$$
+
+**公式展示原则**：
+1. 重要公式必须独立成行，用 `$$...$$` 格式，**`$$`和公式内容必须在同一行**
+2. 公式后紧跟变量说明，使用列表格式：
+   - $R^2$ — 决定系数
+   - $y_i$ — 观测值
+   - $\\hat{y}_i$ — 预测值
+3. 多个相关公式用编号区分：
+
+   **公式 (1)**：均方误差
+   $$MSE = \\frac{1}{n}\\sum_{i=1}^{n}(y_i - \\hat{y}_i)^2$$
+
+   **公式 (2)**：均方根误差
+   $$RMSE = \\sqrt{MSE}$$
+
+### 📊 表格格式
+| 指标 | 数值 | 说明 |
+|:-----|:----:|:-----|
+| $R^2$ | 0.92 | 拟合优度 |
+| RMSE | 0.15 | 预测误差 |
+
+### 📝 列表格式
+- 项目 1
+- 项目 2
+  - 子项目
+
+### 📚 文献引用格式
+> **[1]** Author et al. (Year). *Title*. **Journal**, Volume(Issue), Pages. DOI: xxx
+
+### 💻 代码格式
+```python
+# 代码内容
+```
 
 ## 代码规范
 当需要执行计算或生成图表时：
@@ -66,10 +224,17 @@ def build_system_prompt(
 3. 使用 print() 输出数值结果
 4. 代码必须可以独立运行（包含所有 import）
 
-## 重要规则
-1. **文献必须真实** — 只引用检索到的文献，不要编造
-2. **用中文回复**（除非用户要求英文）
-3. **关键决策** — 询问用户意见
+## ⚠️ 文献引用规则（严格遵守）
+1. **绝对禁止编造文献** — 你 **只能** 引用 [文献检索结果] 中返回的论文
+2. **不要自己"想象"任何论文** — 即使你"知道"某篇论文存在，如果它不在检索结果中，就不要引用
+3. **如果检索结果为空** — 明确告诉用户"未在数据库中找到相关文献"，并建议换关键词重试
+4. **引用格式** — 只使用检索结果中的作者、年份、标题、DOI，不要修改或补充
+5. **不够就是不够** — 如果只找到 3 篇相关论文，就只介绍这 3 篇，不要为了"显得全面"而编造更多
+
+## 其他规则
+1. **用中文回复**（除非用户要求英文）
+2. **关键决策** — 询问用户意见
+3. **结构清晰** — 使用标题、列表、表格等让内容易于阅读
 """
 
     if memory:
@@ -82,6 +247,19 @@ def build_system_prompt(
 
     if extra_context:
         base += f"\n\n{extra_context}"
+
+    # 注入 Project Instructions（如果有）
+    if project:
+        project_name = project.get("name", "未命名项目")
+        project_instructions = project.get("instructions", "")
+
+        base += f"\n\n## 📁 当前项目: {project_name}\n"
+
+        if project_instructions:
+            base += f"\n### 项目自定义指令（必须遵守）\n{project_instructions}\n"
+
+        if project_knowledge:
+            base += f"\n### 项目知识库\n以下是项目相关的参考资料，可以引用：\n{project_knowledge}\n"
 
     return base
 
@@ -154,8 +332,108 @@ async def starters():
 
 
 # ============================================================
+# 恢复历史对话
+# ============================================================
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: dict):
+    """恢复历史对话（使用 UUID 格式的 thread_id）"""
+    try:
+        print(f"[APP] on_chat_resume called with thread: {thread}")
+        thread_id = thread.get("id")
+        if not thread_id:
+            print("[APP] on_chat_resume: No thread_id found")
+            return
+
+        print(f"[APP] on_chat_resume: Loading steps for thread_id={thread_id}")
+        # 获取历史步骤（使用新的 UUID-based 数据结构）
+        steps = get_thread_steps(thread_id)
+        print(f"[APP] on_chat_resume: Found {len(steps)} steps")
+
+        # 恢复到 chat context
+        for i, step in enumerate(steps):
+            step_type = step.get("type", "")
+            output = step.get("output", "")
+            input_text = step.get("input", "")
+            print(f"[APP] on_chat_resume: Step {i}: type={step_type}")
+
+            # 用户消息
+            if step_type == "user_message":
+                await cl.Message(
+                    content=input_text or output,
+                    author="user",
+                    type="user_message",
+                ).send()
+            # AI 回复
+            elif step_type == "assistant_message" and output:
+                await cl.Message(
+                    content=output,
+                    author="assistant",
+                ).send()
+
+        # 设置 session 变量（现在使用 UUID 字符串）
+        cl.user_session.set("thread_id", thread_id)
+
+        # 获取用户信息
+        user = cl.user_session.get("user")
+        if user and user.metadata:
+            user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
+            cl.user_session.set("user_id", user_id)
+
+        # 初始化其他 session 变量
+        profile = cl.user_session.get("chat_profile")
+        if profile:
+            cl.user_session.set("provider", profile)
+            config = MODEL_PROVIDERS.get(profile, {})
+            cl.user_session.set("current_model", config.get("default_model", ""))
+
+        memory = ProjectMemory("default", name="恢复的对话")
+        cl.user_session.set("memory", memory)
+        cl.user_session.set("temperature", 0.7)
+        cl.user_session.set("max_tokens", 16384)
+
+        print(f"[APP] on_chat_resume: Successfully resumed thread {thread_id}")
+
+    except Exception as e:
+        print(f"[APP] on_chat_resume ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+
+    await cl.Message(
+        content=f"📂 **已恢复历史对话**\n\n继续我们之前的讨论吧！"
+    ).send()
+
+
+# ============================================================
 # Chat 启动
 # ============================================================
+
+@cl.set_starters
+async def set_starters():
+    """设置快捷启动按钮（类似 Claude 的欢迎页面）"""
+    return [
+        cl.Starter(
+            label="📚 文献检索",
+            message="帮我检索关于 [主题] 的最新研究论文",
+            icon="/public/icons/search.svg",
+        ),
+        cl.Starter(
+            label="📊 数据分析",
+            message="帮我分析这个数据集的统计特征和相关性",
+            icon="/public/icons/chart.svg",
+        ),
+        cl.Starter(
+            label="💻 代码执行",
+            message="用 Python 帮我 [描述任务]",
+            icon="/public/icons/code.svg",
+        ),
+        cl.Starter(
+            label="✍️ 论文写作",
+            message="帮我撰写关于 [主题] 的研究综述",
+            icon="/public/icons/write.svg",
+        ),
+    ]
+
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -178,25 +456,147 @@ async def on_chat_start():
         ).send()
         return
 
+    # 获取用户信息（如果已登录）
+    user = cl.user_session.get("user")
+    user_id = None
+    user_name = "访客"
+    user_email = ""
+
+    print(f"[APP] on_chat_start - user object: {user}")
+    print(f"[APP] on_chat_start - user type: {type(user)}")
+
+    if user:
+        print(f"[APP] on_chat_start - user.identifier: {user.identifier}")
+        print(f"[APP] on_chat_start - user.metadata: {user.metadata}")
+        if user.metadata:
+            # 注意：PersistedUser 的 metadata 中使用 db_id 而不是 user_id
+            user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
+            user_name = user.identifier
+            user_email = user.metadata.get("email", "")
+            print(f"[APP] on_chat_start - extracted user_id: {user_id}")
+
+    # 创建新的 UUID 线程（用于侧边栏历史对话）
+    print(f"[APP] on_chat_start - about to create thread, user_id={user_id}")
+    if user_id:
+        thread_id = str(uuid_module.uuid4())
+        # 直接在数据库中创建线程
+        db_create_thread(
+            user_id=user_id,
+            user_identifier=user_name,
+            name=f"对话 - {user_name}",
+            thread_id=thread_id,
+        )
+        cl.user_session.set("thread_id", thread_id)
+        print(f"[APP] Created thread: {thread_id} for user: {user_id}")
+
+        # 同时创建旧版对话（向后兼容）
+        conversation_id = create_conversation(user_id)
+        cl.user_session.set("conversation_id", conversation_id)
+
+        # 加载用户的 Projects
+        user_projects = get_user_projects(user_id)
+
+        # 如果用户没有任何项目，创建一个默认项目
+        if not user_projects:
+            default_project_id = create_project(
+                user_id=user_id,
+                name="默认项目",
+                description="通用对话项目",
+                instructions="",
+                icon="📁",
+                is_default=True
+            )
+            user_projects = get_user_projects(user_id)
+
+        # 获取默认项目或第一个项目
+        current_project = get_default_project(user_id)
+        if not current_project and user_projects:
+            current_project = user_projects[0]
+
+        if current_project:
+            cl.user_session.set("current_project", current_project)
+            cl.user_session.set("current_project_id", current_project["id"])
+
+            # 将当前对话关联到项目
+            if thread_id:
+                set_thread_project(thread_id, current_project["id"])
+
     # 初始化 Memory
     memory = ProjectMemory("default", name="快速对话")
     cl.user_session.set("memory", memory)
     cl.user_session.set("provider", profile)
 
-    # 欢迎消息
-    config = MODEL_PROVIDERS.get(profile, {})
-    model_name = config.get("default_model", "unknown")
+    # 获取所有已配置的提供商
+    available_providers = get_available_providers()
 
-    await cl.Message(
-        content=f"👋 你好！我是 **GeoMind**，你的地球科学 AI 研究助手。\n\n"
-        f"当前模型: **{profile}** (`{model_name}`)\n\n"
-        f"我可以帮你：\n"
-        f"- 🔍 检索 70 万+ 验证论文\n"
-        f"- 📊 分析数据、执行代码\n"
-        f"- 📈 生成学术级图表\n"
-        f"- ✍️ 辅助论文写作\n\n"
-        f"直接告诉我你的需求吧！"
-    ).send()
+    # 获取当前提供商的配置
+    config = MODEL_PROVIDERS.get(profile, {})
+    default_model = config.get("default_model", "")
+
+    # 构建所有可用模型的列表（格式: "提供商: 模型名"）
+    all_models = []
+    for provider_name in available_providers:
+        provider_config = MODEL_PROVIDERS.get(provider_name, {})
+        for model in provider_config.get("models", []):
+            all_models.append(f"{provider_name}: {model}")
+
+    # 当前选择的模型
+    current_selection = f"{profile}: {default_model}"
+
+    # 初始化设置
+    cl.user_session.set("current_model", default_model)
+    cl.user_session.set("temperature", 0.7)
+    cl.user_session.set("max_tokens", 16384)  # 默认更大的输出长度
+
+    # 构建设置面板组件
+    settings_widgets = [
+        cl.input_widget.Select(
+            id="model",
+            label="🤖 模型选择（服务: 模型）",
+            values=all_models,
+            initial_value=current_selection,
+        ),
+        cl.input_widget.Slider(
+            id="temperature",
+            label="🌡️ 温度 (Temperature)",
+            initial=0.7,
+            min=0,
+            max=1,
+            step=0.1,
+        ),
+        cl.input_widget.Slider(
+            id="max_tokens",
+            label="📝 最大输出长度 (Max Tokens)",
+            initial=16384,
+            min=1024,
+            max=65536,
+            step=4096,
+        ),
+    ]
+
+    # 如果用户已登录，添加 Project 选择器
+    if user_id:
+        user_projects = get_user_projects(user_id)
+        if user_projects:
+            project_options = [f"{p['icon']} {p['name']}" for p in user_projects]
+            current_project = cl.user_session.get("current_project")
+            current_project_name = f"{current_project['icon']} {current_project['name']}" if current_project else project_options[0]
+
+            settings_widgets.insert(0, cl.input_widget.Select(
+                id="project",
+                label="📁 当前项目",
+                values=project_options,
+                initial_value=current_project_name,
+            ))
+
+            # 保存项目列表供后续使用
+            cl.user_session.set("user_projects", user_projects)
+
+    # 创建设置面板
+    settings = await cl.ChatSettings(settings_widgets).send()
+
+    # 不发送欢迎消息，让界面保持简洁
+    # 用户会看到 starters（快捷按钮）和输入框
 
 
 # ============================================================
@@ -209,9 +609,14 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
         return ""
 
     context_parts = []
+    uploaded_files_list = []  # 保存文件信息用于代码执行
+
     for f in files:
         name = f.name
         ext = Path(name).suffix.lower()
+
+        # 保存文件信息（路径和名称）
+        uploaded_files_list.append({"name": name, "path": f.path})
 
         if ext in (".xlsx", ".xls", ".csv"):
             try:
@@ -229,6 +634,7 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
                     f"- 列名: {', '.join(df.columns.tolist())}\n"
                     f"- 数据类型:\n{df.dtypes.to_string()}\n"
                     f"- 前 5 行预览:\n{preview}\n"
+                    f"- **代码中请使用文件名: '{name}'**\n"
                 )
                 context_parts.append(desc)
 
@@ -262,7 +668,328 @@ async def handle_uploaded_files(files: List[cl.File]) -> str:
         else:
             context_parts.append(f"\n[已上传文件: {name} (类型: {ext})]\n")
 
+    # 保存上传文件列表到 session，供代码执行时使用
+    existing_files = cl.user_session.get("uploaded_files") or []
+    existing_files.extend(uploaded_files_list)
+    cl.user_session.set("uploaded_files", existing_files)
+
+    # 将文件添加到当前项目的知识库
+    current_project = cl.user_session.get("current_project")
+    if current_project:
+        for f_info in uploaded_files_list:
+            try:
+                # 读取文件内容
+                file_path = Path(f_info["path"])
+                file_size = file_path.stat().st_size if file_path.exists() else 0
+                ext = file_path.suffix.lower()
+
+                # 对于文本文件，提取内容
+                content_text = None
+                if ext in [".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css"]:
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as fh:
+                            content_text = fh.read()[:50000]  # 限制大小
+                    except:
+                        pass
+                elif ext in [".xlsx", ".xls"]:
+                    try:
+                        import pandas as pd
+                        df = pd.read_excel(file_path)
+                        content_text = df.to_string()[:50000]
+                    except:
+                        pass
+
+                # 保存到项目文件
+                add_project_file(
+                    project_id=current_project["id"],
+                    filename=f_info["name"],
+                    file_type=ext,
+                    file_size=file_size,
+                    content_text=content_text,
+                )
+            except Exception as e:
+                print(f"[APP] 保存文件到项目失败: {e}")
+
     return "\n".join(context_parts)
+
+
+# ============================================================
+# Project 命令处理
+# ============================================================
+
+async def handle_project_command(command: str):
+    """处理 /project 命令"""
+    user = cl.user_session.get("user")
+    if not user or not user.metadata:
+        await cl.Message(content="⚠️ 请先登录后使用 Project 功能").send()
+        return
+
+    user_id = user.metadata.get("db_id") or user.metadata.get("user_id")
+    if not user_id:
+        await cl.Message(content="⚠️ 无法获取用户信息").send()
+        return
+
+    parts = command.strip().split(maxsplit=2)
+    action = parts[1] if len(parts) > 1 else "help"
+
+    if action == "list":
+        # 列出所有项目
+        projects = get_user_projects(user_id)
+        if not projects:
+            await cl.Message(content="📁 你还没有任何项目，使用 `/project create 项目名` 创建一个").send()
+            return
+
+        current_project = cl.user_session.get("current_project")
+        current_id = current_project["id"] if current_project else None
+
+        project_list = "## 📁 我的项目\n\n"
+        for p in projects:
+            is_current = " ✅ *当前*" if p["id"] == current_id else ""
+            is_default = " ⭐" if p["is_default"] else ""
+            project_list += f"- {p['icon']} **{p['name']}**{is_default}{is_current}\n"
+            if p["description"]:
+                project_list += f"  {p['description']}\n"
+
+        project_list += "\n---\n"
+        project_list += "**命令**：\n"
+        project_list += "- `/project create 项目名` - 创建新项目\n"
+        project_list += "- `/project switch 项目名` - 切换到项目\n"
+        project_list += "- `/project edit` - 编辑当前项目设置\n"
+        project_list += "- `/project files` - 查看项目文件\n"
+        project_list += "- `/project delete 项目名` - 删除项目\n"
+
+        await cl.Message(content=project_list).send()
+
+    elif action == "create":
+        # 创建新项目
+        name = parts[2] if len(parts) > 2 else None
+        if not name:
+            await cl.Message(content="⚠️ 请指定项目名：`/project create 我的研究项目`").send()
+            return
+
+        project_id = create_project(
+            user_id=user_id,
+            name=name,
+            description="",
+            instructions="",
+            icon="📁",
+            is_default=False
+        )
+
+        # 自动切换到新项目
+        new_project = get_project(project_id)
+        cl.user_session.set("current_project", new_project)
+        cl.user_session.set("current_project_id", project_id)
+
+        # 更新项目列表
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(
+            content=f"✅ **项目已创建**: {name}\n\n"
+            f"已自动切换到该项目。\n"
+            f"使用 `/project edit` 设置项目的自定义指令。"
+        ).send()
+
+    elif action == "switch":
+        # 切换项目
+        name = parts[2] if len(parts) > 2 else None
+        if not name:
+            await cl.Message(content="⚠️ 请指定项目名：`/project switch 我的研究项目`").send()
+            return
+
+        projects = get_user_projects(user_id)
+        target = None
+        for p in projects:
+            if p["name"] == name:
+                target = p
+                break
+
+        if not target:
+            await cl.Message(content=f"⚠️ 未找到项目: {name}\n使用 `/project list` 查看所有项目").send()
+            return
+
+        cl.user_session.set("current_project", target)
+        cl.user_session.set("current_project_id", target["id"])
+
+        # 关联当前对话到新项目
+        thread_id = cl.user_session.get("thread_id")
+        if thread_id:
+            set_thread_project(thread_id, target["id"])
+
+        await cl.Message(
+            content=f"✅ 已切换到项目: {target['icon']} **{target['name']}**"
+        ).send()
+
+    elif action == "edit":
+        # 编辑当前项目
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        # 显示当前设置
+        content = f"## ✏️ 编辑项目: {current_project['icon']} {current_project['name']}\n\n"
+        content += f"**当前描述**: {current_project.get('description') or '(无)'}\n\n"
+        content += f"**当前自定义指令**:\n```\n{current_project.get('instructions') or '(无)'}\n```\n\n"
+        content += "---\n"
+        content += "**修改命令**:\n"
+        content += "- `/project set-name 新名称` - 修改名称\n"
+        content += "- `/project set-desc 描述内容` - 修改描述\n"
+        content += "- `/project set-instructions 指令内容` - 设置自定义指令\n"
+        content += "- `/project set-icon 🔬` - 设置图标\n"
+
+        await cl.Message(content=content).send()
+
+    elif action == "set-name":
+        # 设置项目名称
+        new_name = parts[2] if len(parts) > 2 else None
+        if not new_name:
+            await cl.Message(content="⚠️ 请指定新名称：`/project set-name 新名称`").send()
+            return
+
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], name=new_name)
+        current_project["name"] = new_name
+        cl.user_session.set("current_project", current_project)
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(content=f"✅ 项目名称已更新为: **{new_name}**").send()
+
+    elif action == "set-desc":
+        # 设置项目描述
+        desc = parts[2] if len(parts) > 2 else ""
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], description=desc)
+        current_project["description"] = desc
+        cl.user_session.set("current_project", current_project)
+
+        await cl.Message(content=f"✅ 项目描述已更新").send()
+
+    elif action == "set-instructions":
+        # 设置自定义指令
+        instructions = parts[2] if len(parts) > 2 else ""
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], instructions=instructions)
+        current_project["instructions"] = instructions
+        cl.user_session.set("current_project", current_project)
+
+        await cl.Message(
+            content=f"✅ 项目自定义指令已更新\n\n"
+            f"这些指令会在每次对话中自动注入到系统提示词中。\n\n"
+            f"**当前指令**:\n```\n{instructions or '(无)'}\n```"
+        ).send()
+
+    elif action == "set-icon":
+        # 设置图标
+        icon = parts[2] if len(parts) > 2 else "📁"
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        update_project(current_project["id"], icon=icon)
+        current_project["icon"] = icon
+        cl.user_session.set("current_project", current_project)
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(content=f"✅ 项目图标已更新为: {icon}").send()
+
+    elif action == "files":
+        # 查看项目文件
+        current_project = cl.user_session.get("current_project")
+        if not current_project:
+            await cl.Message(content="⚠️ 当前没有选中的项目").send()
+            return
+
+        files = get_project_files(current_project["id"])
+
+        content = f"## 📄 项目文件: {current_project['icon']} {current_project['name']}\n\n"
+
+        if not files:
+            content += "*暂无文件*\n\n"
+            content += "**上传文件方法**：\n"
+            content += "1. 在对话中上传文件，会自动添加到当前项目\n"
+            content += "2. 或使用 `/project add-file` 命令（开发中）\n"
+        else:
+            for f in files:
+                size_kb = f["file_size"] / 1024 if f["file_size"] else 0
+                content += f"- 📄 **{f['filename']}** ({size_kb:.1f} KB)\n"
+
+            content += f"\n共 {len(files)} 个文件"
+
+        await cl.Message(content=content).send()
+
+    elif action == "delete":
+        # 删除项目
+        name = parts[2] if len(parts) > 2 else None
+        if not name:
+            await cl.Message(content="⚠️ 请指定要删除的项目名：`/project delete 项目名`").send()
+            return
+
+        projects = get_user_projects(user_id)
+        target = None
+        for p in projects:
+            if p["name"] == name:
+                target = p
+                break
+
+        if not target:
+            await cl.Message(content=f"⚠️ 未找到项目: {name}").send()
+            return
+
+        # 检查是否是当前项目
+        current_project = cl.user_session.get("current_project")
+        if current_project and current_project["id"] == target["id"]:
+            await cl.Message(content="⚠️ 不能删除当前正在使用的项目，请先切换到其他项目").send()
+            return
+
+        delete_project(target["id"])
+        cl.user_session.set("user_projects", get_user_projects(user_id))
+
+        await cl.Message(content=f"✅ 项目 **{name}** 已删除").send()
+
+    else:
+        # 显示帮助
+        help_text = """## 📁 Project 命令帮助
+
+Projects 功能让你可以为不同的研究项目设置独立的：
+- **自定义指令** - 每个项目的专属 AI 行为规则
+- **知识库文件** - 上传的文件会作为项目参考资料
+- **对话历史** - 每个项目的对话独立管理
+
+### 可用命令
+
+| 命令 | 说明 |
+|------|------|
+| `/project list` | 列出所有项目 |
+| `/project create 项目名` | 创建新项目 |
+| `/project switch 项目名` | 切换到项目 |
+| `/project edit` | 编辑当前项目设置 |
+| `/project set-instructions 指令` | 设置自定义指令 |
+| `/project files` | 查看项目文件 |
+| `/project delete 项目名` | 删除项目 |
+
+### 示例
+
+```
+/project create 深度学习遥感研究
+/project set-instructions 专注于深度学习在遥感影像分类中的应用，优先引用2020年后的论文
+/project switch 默认项目
+```
+"""
+        await cl.Message(content=help_text).send()
 
 
 # ============================================================
@@ -280,6 +1007,37 @@ async def on_message(message: cl.Message):
 
     memory = cl.user_session.get("memory")
     user_text = message.content
+    conversation_id = cl.user_session.get("conversation_id")
+    thread_id = cl.user_session.get("thread_id")
+
+    # ── 处理 /project 命令 ──
+    if user_text.startswith("/project"):
+        await handle_project_command(user_text)
+        return
+
+    # 保存用户消息到新的线程系统
+    if thread_id:
+        db_create_step(
+            thread_id=thread_id,
+            step_type="user_message",
+            name="user",
+            input_text=user_text,
+            output_text=user_text,
+        )
+        # 更新线程标题（第一条消息作为标题）
+        title = user_text[:50] + ("..." if len(user_text) > 50 else "")
+        db_update_thread(thread_id, name=title)
+        print(f"[APP] Saved user message to thread: {thread_id}")
+
+    # 保存用户消息到旧的数据库（向后兼容）
+    if conversation_id:
+        add_message(conversation_id, "user", user_text)
+
+        # 如果是第一条消息，用它作为对话标题
+        messages = get_conversation_messages(conversation_id)
+        if len(messages) == 1:
+            title = user_text[:50] + ("..." if len(user_text) > 50 else "")
+            update_conversation_title(conversation_id, title)
 
     # 处理上传文件
     file_context = ""
@@ -288,23 +1046,80 @@ async def on_message(message: cl.Message):
         if files:
             file_context = await handle_uploaded_files(files)
 
-    # ── Step 1: 意图识别 & Skill 匹配 ──
+    # ── Step 1: 意图识别（LLM 分析用户意图） ──
+    intent: Optional[Intent] = None
+    optimized_search_query: Optional[str] = None
+
+    # 使用 LLM 进行意图识别（轻量级调用）
+    try:
+        provider = cl.user_session.get("provider")
+        current_model = cl.user_session.get("current_model")
+
+        intent_prompt = get_intent_prompt(user_text)
+        intent_response = await call_llm(
+            messages=[{"role": "user", "content": intent_prompt}],
+            system_prompt=INTENT_SYSTEM_PROMPT,
+            provider=provider,
+            model=current_model,
+            temperature=0.1,  # 低温度确保稳定输出
+            max_tokens=500,   # 意图识别只需要少量 token
+        )
+
+        intent = parse_intent_response(intent_response)
+
+        if intent:
+            # 显示识别到的意图
+            intent_icons = {
+                IntentType.LITERATURE_SEARCH: "📚",
+                IntentType.CODE_EXECUTION: "💻",
+                IntentType.DATA_ANALYSIS: "📊",
+                IntentType.VISUALIZATION: "📈",
+                IntentType.PAPER_WRITING: "✍️",
+                IntentType.DIRECT_ANSWER: "💬",
+            }
+            icon = intent_icons.get(intent.primary_intent, "🎯")
+
+            async with cl.Step(name=f"{icon} 意图识别", type="tool") as step:
+                step.output = f"识别意图: **{intent.primary_intent.value}**"
+                if intent.search_query:
+                    step.output += f"\n优化查询: `{intent.search_query}`"
+                    optimized_search_query = intent.search_query
+
+    except Exception as e:
+        print(f"[Intent] LLM 意图识别失败: {e}")
+        # 使用后备方案
+        intent = fallback_intent_detection(user_text)
+
+    # ── Step 2: Skill 匹配 ──
     matched_skill = skills_manager.match_skill(user_text)
     if matched_skill:
         # 显示匹配到的 Skill
         async with cl.Step(name="🎯 技能匹配", type="tool") as step:
             step.output = f"匹配到: **{matched_skill}**"
 
-    # ── Step 2: 文献检索（如果触发） ──
+    # ── Step 3: 文献检索（基于意图识别或关键词触发） ──
     literature_context = ""
-    literature_keywords = ["文献", "论文", "检索", "搜索", "找", "@文献", "literature", "paper", "search"]
-    needs_search = any(kw in user_text.lower() for kw in literature_keywords)
+
+    # 判断是否需要文献检索：
+    # 1. 意图识别结果为 LITERATURE_SEARCH
+    # 2. 或者包含文献相关关键词（后备方案）
+    literature_keywords = ["文献", "论文", "检索", "搜索论文", "找论文", "@文献", "literature", "paper", "reference"]
+    needs_search = (
+        (intent and intent.primary_intent == IntentType.LITERATURE_SEARCH)
+        or any(kw in user_text.lower() for kw in literature_keywords)
+    )
 
     if needs_search:
-        async with cl.Step(name="🔍 文献检索", type="tool") as step:
-            step.input = f"检索关键词: {user_text[:100]}"
+        # 使用优化后的查询（如果有）或原始用户输入
+        search_query = optimized_search_query or user_text
 
-            result = await search_papers(user_text, limit=15)
+        async with cl.Step(name="🔍 文献检索", type="tool") as step:
+            if optimized_search_query:
+                step.input = f"优化查询: {search_query}"
+            else:
+                step.input = f"检索关键词: {user_text[:100]}"
+
+            result = await search_papers(search_query, limit=15)
 
             if result["success"] and result["papers"]:
                 papers = result["papers"]
@@ -312,7 +1127,15 @@ async def on_message(message: cl.Message):
 
                 # 格式化为上下文
                 papers_md = format_papers_markdown(papers)
-                literature_context = f"\n\n[文献检索结果]\n{papers_md}\n[END]\n"
+                literature_context = f"""
+
+[文献检索结果 - 来自 Qdrant 数据库]
+⚠️ 重要提示：以下是数据库中找到的所有相关论文。你只能引用这些论文，绝对不能编造或补充任何不在此列表中的文献。
+
+{papers_md}
+
+[检索结果结束 - 共 {len(papers)} 篇，只引用以上论文]
+"""
 
                 # 保存到 Memory
                 if memory:
@@ -328,9 +1151,41 @@ async def on_message(message: cl.Message):
                     display="side",
                 )
                 # 将在最终消息中附加
+            elif result["success"] and not result["papers"]:
+                debug_msg = result.get("debug", "")
+                step.output = f"⚠️ 在 Qdrant 数据库中未找到相关文献\n调试: {debug_msg}"
+                # 发送一条消息让用户看到调试信息
+                await cl.Message(
+                    content=f"📭 **文献检索结果为空**\n\n"
+                    f"在 Qdrant 数据库中未找到与 `{user_text[:50]}...` 匹配的论文。\n\n"
+                    f"**调试信息**: {debug_msg}\n\n"
+                    f"建议：尝试使用英文关键词或更宽泛的搜索词。"
+                ).send()
+                literature_context = """
+
+[文献检索结果 - 来自 Qdrant 数据库]
+⚠️ 未找到相关文献。数据库中没有与该查询匹配的论文。
+⚠️ 严禁编造文献：由于没有检索结果，你绝对不能自己"想象"或"推荐"任何论文。
+请告诉用户：数据库中未找到相关文献，建议尝试其他关键词或使用英文检索。
+[检索结果结束 - 共 0 篇]
+"""
             else:
-                error_msg = result.get("error", "未找到相关文献")
-                step.output = f"⚠️ {error_msg}"
+                error_msg = result.get("error", "检索出错")
+                debug_msg = result.get("debug", "")
+                step.output = f"⚠️ {error_msg}\n调试: {debug_msg}"
+                # 发送错误消息给用户
+                await cl.Message(
+                    content=f"❌ **文献检索失败**\n\n"
+                    f"错误: {error_msg}\n\n"
+                    f"**调试信息**: {debug_msg}"
+                ).send()
+                literature_context = f"""
+
+[文献检索失败]
+错误信息：{error_msg}
+⚠️ 由于检索失败，你没有任何可引用的文献。绝对不要编造文献。
+请告诉用户检索出现问题，并建议稍后重试。
+"""
 
     # ── Step 3: 调用 LLM（流式输出） ──
     # 组装消息历史
@@ -349,11 +1204,24 @@ async def on_message(message: cl.Message):
     if literature_context:
         extra_ctx += literature_context
 
+    # 获取当前项目信息和知识库
+    current_project = cl.user_session.get("current_project")
+    project_knowledge = ""
+    if current_project:
+        project_knowledge = get_project_knowledge_context(current_project["id"])
+
     system_prompt = build_system_prompt(
         skill_name=matched_skill,
         memory=memory,
         extra_context=extra_ctx,
+        project=current_project,
+        project_knowledge=project_knowledge,
     )
+
+    # 获取用户设置
+    current_model = cl.user_session.get("current_model")
+    temperature = cl.user_session.get("temperature", 0.7)
+    max_tokens = cl.user_session.get("max_tokens", 4096)
 
     # 流式输出
     response_msg = cl.Message(content="")
@@ -364,16 +1232,53 @@ async def on_message(message: cl.Message):
         messages=clean_history,
         system_prompt=system_prompt,
         provider=provider,
+        model=current_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
     ):
         full_response += token
         await response_msg.stream_token(token)
 
     await response_msg.update()
 
+    # 保存 AI 回复到新的线程系统
+    if thread_id and full_response:
+        db_create_step(
+            thread_id=thread_id,
+            step_type="assistant_message",
+            name="assistant",
+            output_text=full_response,
+        )
+        print(f"[APP] Saved assistant message to thread: {thread_id}")
+
+    # 保存 AI 回复到旧的数据库（向后兼容）
+    if conversation_id and full_response:
+        add_message(conversation_id, "assistant", full_response)
+
+    # ── Artifacts: 提取文档内容 ──
+    doc_artifacts = []
+
+    # 检测 Markdown 文档块（```markdown ... ```）
+    md_blocks = extract_markdown_blocks(full_response)
+    for idx, md_content in enumerate(md_blocks):
+        doc_name = f"document_{idx + 1}.md"
+        md_file = cl.File(
+            name=doc_name,
+            content=md_content.encode("utf-8"),
+            display="side",
+        )
+        doc_artifacts.append(md_file)
+
     # 附加 BibTeX 文件（如果有文献搜索结果）
     if needs_search and "bibtex_element" in dir():
-        # 在 side panel 显示文献列表
         pass  # BibTeX 已通过 Step 展示
+
+    # 如果有文档 Artifacts，发送提示
+    if doc_artifacts:
+        await cl.Message(
+            content="📄 **已生成文档** — 点击右侧面板查看和下载",
+            elements=doc_artifacts,
+        ).send()
 
     # ── Step 4: 自动代码执行 + 重试 ──
     code_blocks = extract_code_blocks(full_response)
@@ -403,6 +1308,14 @@ async def _auto_execute_code(
     流程: 执行 → 检查 → OK 输出结果 / 失败 → AI 修代码 → 重试（最多 3 轮）
     """
 
+    # 获取上传的文件列表
+    uploaded_files = cl.user_session.get("uploaded_files") or []
+
+    # 获取用户设置
+    current_model = cl.user_session.get("current_model")
+    temperature = cl.user_session.get("temperature", 0.7)
+    max_tokens = cl.user_session.get("max_tokens", 4096)
+
     for i, code in enumerate(code_blocks):
         retry_count = 0
         current_code = code
@@ -417,30 +1330,76 @@ async def _auto_execute_code(
             async with cl.Step(name=step_name, type="run") as step:
                 step.input = f"```python\n{current_code[:500]}{'...' if len(current_code) > 500 else ''}\n```"
 
-                result = execute_python(current_code)
+                result = execute_python(current_code, uploaded_files=uploaded_files)
 
                 if result["success"]:
                     # ✅ 执行成功
                     step.output = format_execution_result(result)
 
-                    # 显示输出
-                    if result["output"]:
+                    # 显示自动安装的包
+                    if result.get("installed"):
                         await cl.Message(
-                            content=f"**执行结果：**\n```\n{result['output']}\n```"
+                            content=f"📦 **自动安装了以下依赖：** {', '.join(result['installed'])}"
                         ).send()
 
-                    # 显示图表
+                    # ── 显示执行结果 ──
+                    elements = []
+
+                    # 代码文件（可下载）
+                    code_file = cl.File(
+                        name="code.py",
+                        content=current_code.encode("utf-8"),
+                        display="inline",
+                    )
+                    elements.append(code_file)
+
+                    # 输出文件（可下载）
+                    if result["output"]:
+                        output_file = cl.File(
+                            name="output.txt",
+                            content=result["output"].encode("utf-8"),
+                            display="inline",
+                        )
+                        elements.append(output_file)
+
+                    # 构建结果消息
+                    result_msg = "✅ **代码执行成功**\n\n"
+
+                    if result["output"]:
+                        output_preview = result["output"][:1000]
+                        if len(result["output"]) > 1000:
+                            output_preview += "\n... (输出已截断)"
+                        result_msg += f"```\n{output_preview}\n```\n\n"
+
+                    if result["images"]:
+                        result_msg += f"📊 生成了 {len(result['images'])} 张图表\n\n"
+
+                    result_msg += "📥 **下载**: 点击上方文件名下载代码和输出"
+
+                    await cl.Message(content=result_msg, elements=elements).send()
+
+                    # 单独显示每张图表（大图 + 下载）
                     for img in result["images"]:
                         img_bytes = base64.b64decode(img["data"])
+
+                        # 图片元素
                         image_element = cl.Image(
                             name=img["filename"],
                             content=img_bytes,
                             display="inline",
                             size="large",
                         )
+
+                        # 图片文件（可下载）
+                        img_file = cl.File(
+                            name=img["filename"],
+                            content=img_bytes,
+                            display="inline",
+                        )
+
                         await cl.Message(
                             content=f"📊 **{img['filename']}**",
-                            elements=[image_element],
+                            elements=[image_element, img_file],
                         ).send()
 
                     break  # 成功，退出重试循环
@@ -473,6 +1432,9 @@ async def _auto_execute_code(
                             messages=fix_messages,
                             system_prompt=system_prompt,
                             provider=provider,
+                            model=current_model,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
                         )
 
                         # 提取修复后的代码
@@ -495,5 +1457,62 @@ async def _auto_execute_code(
 @cl.on_settings_update
 async def on_settings_update(settings):
     """处理用户修改设置"""
-    # 预留：未来可在这里处理 API Key 等运行时设置
-    pass
+    # 更新项目选择
+    if "project" in settings:
+        project_name = settings["project"]
+        user_projects = cl.user_session.get("user_projects", [])
+
+        # 根据名称找到项目（格式: "📁 项目名"）
+        for p in user_projects:
+            full_name = f"{p['icon']} {p['name']}"
+            if full_name == project_name:
+                cl.user_session.set("current_project", p)
+                cl.user_session.set("current_project_id", p["id"])
+
+                # 将当前对话关联到新项目
+                thread_id = cl.user_session.get("thread_id")
+                if thread_id:
+                    set_thread_project(thread_id, p["id"])
+                break
+
+    # 更新模型选择（格式: "提供商: 模型"）
+    if "model" in settings:
+        model_str = settings["model"]
+        if ": " in model_str:
+            provider, model = model_str.split(": ", 1)
+            cl.user_session.set("provider", provider)
+            cl.user_session.set("current_model", model)
+        else:
+            cl.user_session.set("current_model", model_str)
+
+    # 更新温度
+    if "temperature" in settings:
+        cl.user_session.set("temperature", settings["temperature"])
+
+    # 更新最大 token 数
+    if "max_tokens" in settings:
+        cl.user_session.set("max_tokens", int(settings["max_tokens"]))
+
+    # 显示设置更新提示
+    provider = cl.user_session.get("provider", "未知")
+    model = cl.user_session.get("current_model", "未知")
+    temp = settings.get("temperature", cl.user_session.get("temperature", 0.7))
+    tokens = settings.get("max_tokens", cl.user_session.get("max_tokens", 4096))
+
+    # 获取提供商图标
+    config = MODEL_PROVIDERS.get(provider, {})
+    icon = config.get("icon", "🤖")
+
+    # 获取当前项目信息
+    current_project = cl.user_session.get("current_project")
+    project_info = ""
+    if current_project:
+        project_info = f"\n- 项目: {current_project['icon']} **{current_project['name']}**"
+
+    await cl.Message(
+        content=f"⚙️ **设置已更新**{project_info}\n"
+        f"- 服务: {icon} **{provider}**\n"
+        f"- 模型: `{model}`\n"
+        f"- 温度: `{temp}`\n"
+        f"- 最大输出: `{int(tokens)}` tokens"
+    ).send()

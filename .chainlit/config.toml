@@ -1,0 +1,52 @@
+# GeoMind Chainlit 配置
+# https://docs.chainlit.io/backend/config/settings
+
+[project]
+# 启用 telemetry（可设为 false 关闭）
+enable_telemetry = false
+
+# 会话超时（秒）
+user_env = []
+
+# 允许用户上传文件
+allow_origins = ["*"]
+
+[UI]
+# 应用名称（显示在标题栏）
+name = "GeoMind"
+
+# 默认展开消息（false 则折叠长消息）
+default_expand_messages = true
+
+# 自定义 CSS（注意：路径相对于项目根目录）
+custom_css = "public/custom.css"
+
+# 自定义 JS（修复弹窗文字）
+custom_js = "public/custom.js"
+
+[features]
+# 启用 LaTeX 渲染（必须在 [features] 下，子节之前）
+latex = true
+
+# 启用多模态（上传图片等）
+multi_modal = true
+
+# 允许 HTML
+unsafe_allow_html = true
+
+# 启用语音输入（需要浏览器支持）
+speech_to_text = false
+
+# 启用自发文件上传（输入框旁显示上传按钮）
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["text/*", "application/*", "image/*"]
+max_files = 10
+max_size_mb = 50
+
+# 启用对话历史（侧边栏显示历史对话列表）
+[features.chat_history]
+enabled = true
+
+[meta]
+generated_by = "GeoMind 4.0"
